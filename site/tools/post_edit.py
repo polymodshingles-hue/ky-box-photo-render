@@ -12,7 +12,7 @@ import sys, os, json, glob, numpy as np, cv2
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = 'v16'
+ENGINE = 'v16c'
 def overrides(name):
     p = os.path.join(HERE, 'overrides.json')
     return json.load(open(p, encoding='utf-8')).get(name, {}) if os.path.exists(p) else {}
@@ -339,6 +339,7 @@ def edge_decolor(a, fg):
     wgt = (band*sel*.85)[..., None]; g = a.astype(np.float32).mean(2, keepdims=True)*np.ones((1, 1, 3), np.float32)
     return np.clip(a.astype(np.float32)*(1-wgt)+g*wgt, 0, 255).astype(np.uint8)
 
+GROW = int(os.environ.get('KY_GROW', 2)); GROW_ALL = os.environ.get('KY_GROW_ALL', '1') == '1'
 def snap_edge(a, fg, r=None):
     """Re-decide the mask inside a thin band around its outline using local colour models of the backdrop (outside) and the box (inside).
     Returns (mask, moved): moved = share of the band that changed; -1 = result rejected (area off by >15%), original mask returned."""
@@ -359,6 +360,9 @@ def snap_edge(a, fg, r=None):
     ok = (df > 1e-3) & (db > 1e-3) & (np.sqrt(((cf-cb)**2).sum(2)) > 12)        # only where box and backdrop really differ
     out = m.copy(); sub = out[y0:y1, x0:x1]; bsub = band[y0:y1, x0:x1] & ok
     sub[bsub] = (al[bsub] > .5).astype(np.uint8)
+    und = np.zeros_like(out); und[y0:y1, x0:x1] = (band[y0:y1, x0:x1] & ~ok).astype(np.uint8)      # edge stretches where box and backdrop look alike (bright glossy rim on a light backdrop): colour cannot decide,
+    gr = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*GROW+1, 2*GROW+1)))        # so keep a thin rim (GROW px) outside the AI outline instead of cutting it
+    out = np.maximum(out, (band.astype(np.uint8) & gr) if GROW_ALL else (und & gr))
     out = cv2.morphologyEx(out, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)); out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     n, lb, st, _ = cv2.connectedComponentsWithStats(out, 8)
     if n > 2: out = (st[:, 4] >= .02*st[1:, 4].max())[lb].astype(np.uint8)*(lb > 0)
