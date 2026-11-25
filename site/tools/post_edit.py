@@ -12,7 +12,7 @@ import sys, os, json, glob, numpy as np, cv2
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = 'v15'
+ENGINE = 'v16'
 def overrides(name):
     p = os.path.join(HERE, 'overrides.json')
     return json.load(open(p, encoding='utf-8')).get(name, {}) if os.path.exists(p) else {}
@@ -22,9 +22,10 @@ def mask_path(src):
 
 def backdrop_sample(a, fg):
     """Backdrop color from a ring along the photo border, with the (widened) box mask excluded. Returns (rgb median or None, clean fraction of photo)."""
-    h, w = a.shape[:2]; k = max(15, int(max(h, w)*.03))
+    _f = 8; a = a[::_f, ::_f]; fg = fg[::_f, ::_f]          # analysis at 1/8 scale: same colour within 1 level, ~100x faster
+    h, w = a.shape[:2]; k = max(3, int(max(h, w)*.03))
     wide = cv2.dilate((fg > 127).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
-    ring = np.zeros((h, w), bool); bw = max(8, int(min(h, w)*.08)); ring[:bw] = True; ring[-bw:] = True; ring[:, :bw] = True; ring[:, -bw:] = True
+    ring = np.zeros((h, w), bool); bw = max(2, int(min(h, w)*.08)); ring[:bw] = True; ring[-bw:] = True; ring[:, :bw] = True; ring[:, -bw:] = True
     sel = ring & (wide == 0); frac = float(sel.mean())
     if frac < .02: return None, frac
     return np.median(a[sel].reshape(-1, 3).astype(float), 0), frac
@@ -33,12 +34,31 @@ def _chroma(a, m):
     lab = cv2.cvtColor(a, cv2.COLOR_RGB2LAB).astype(np.float32); A, B = lab[..., 1]-128, lab[..., 2]-128
     return float(np.sqrt(A**2+B**2)[m].mean()) if m.any() else 0.0
 
+def art_protect(a, fg):
+    """1 = plain paper (bounce cast may be removed), 0 = printed art (leave its colour alone). Art = pixels whose a*/b* differ from the smooth paper colour around them."""
+    m = fg > 127; h, w = m.shape; k = 128.0/max(h, w); sz = (max(8, int(w*k)), max(8, int(h*k)))
+    lab = cv2.cvtColor(a, cv2.COLOR_RGB2LAB); ms = cv2.resize(m.astype(np.uint8), sz, interpolation=cv2.INTER_NEAREST) > 0
+    if ms.sum() < 20: return np.ones((h, w), np.float32)
+    out = []
+    for c in (1, 2):
+        s = cv2.resize(lab[..., c], sz, interpolation=cv2.INTER_AREA); s[~ms] = int(np.median(s[ms]))
+        out.append(cv2.resize(cv2.medianBlur(s, 41), (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32))
+    d = np.sqrt((lab[..., 1].astype(np.float32)-out[0])**2+(lab[..., 2].astype(np.float32)-out[1])**2)
+    return cv2.GaussianBlur(1-np.clip((d-5)/5.0, 0, 1), (0, 0), 1.5)
+
 def _atomic(img, path, fmt, **kw):
     """Save to a temp name then rename, so a killed run never leaves a truncated deliverable."""
     tmp = path + '.tmp'
     img.save(tmp, fmt, **kw); os.replace(tmp, path)
 
-def load(p): return np.array(ImageOps.exif_transpose(Image.open(p)).convert('RGB'))
+def load(p):
+    im = ImageOps.exif_transpose(Image.open(p)); icc = im.info.get('icc_profile')
+    if icc:                                     # wide-gamut phone shots (Display P3) must be converted to sRGB, not just relabelled
+        try:
+            import io; from PIL import ImageCms
+            im = ImageCms.profileToProfile(im.convert('RGB'), ImageCms.ImageCmsProfile(io.BytesIO(icc)), ImageCms.createProfile('sRGB'), outputMode='RGB')
+        except Exception: pass
+    return np.array(im.convert('RGB'))
 
 def wb(a, med=None):
     """med = measured backdrop color (from the photo border, outside the box). None = old top-strip reading."""
@@ -268,13 +288,14 @@ def flatten(a, fg, strength=.65, tone=None):
     if chroma > 25: tgt_med = med+(118-med)*.70 if med < 118 else med           # colorful box (red, green, orange): lift an under-exposed one, leave the rest
     elif dark_neutral: tgt_med = med*.92                                        # black / charcoal box: keep it deep, do not lift
     elif tone == 'white': tgt_med = max(med, med+(222-med)*.8)                  # override: this box is white, shot dim
+    elif tone == 'silver': tgt_med = med                                        # override: metallic/gray box, keep its captured tone
     elif med > 125: tgt_med = med+(214-med)*float(np.clip(.25+(med-150)/40.0*.4, .25, .65))       # white box: clean light. Silver / light gray (median < 190) keep their metal tone
     else: tgt_med = med
     g = np.log(max(tgt_med, 1)/255)/np.log(max(med, 1)/255); L2 = 255*(L2/255)**np.clip(g, .70, 1.45)
     if dark_neutral:                                                            # true black point
         lo = min(np.percentile(L2[m > 0], .5), 8); L2 = np.clip((L2-lo*.9)*(255/max(255-lo*.9, 1)), 0, 255)
     hi = np.percentile(L2[m > 0], 99.5)
-    if hi < 235: L2 = np.clip(L2*(245/max(hi, 1)), 0, 255)*.5+L2*.5
+    if hi < 235 and tone != 'silver': L2 = np.clip(L2*(245/max(hi, 1)), 0, 255)*.5+L2*.5
     lab[..., 0] = np.clip(L2, 0, 255)
     return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
 
@@ -283,7 +304,7 @@ def pop(a):
     dk = getattr(flatten, 'key', 120) < 95; cw = .10 if dk else .15
     lab[..., 0] = cv2.addWeighted(L, 1-cw, cv2.createCLAHE(clipLimit=1.8, tileGridSize=(6, 6)).apply(L), cw, 0)
     out = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB); hsv = cv2.cvtColor(out, cv2.COLOR_RGB2HSV).astype(np.float32)
-    sat = hsv[..., 1]/255; hsv[..., 1] = np.clip(hsv[..., 1]*(1+.38*(1-sat)**.7), 0, 255); hsv[..., 2] = np.clip(hsv[..., 2]*(1.0 if dk else 1.03), 0, 255)
+    sat = hsv[..., 1]/255; hsv[..., 1] = np.clip(hsv[..., 1]*(1+.38*(1-sat)**.7*np.clip((sat-.04)/.08, 0, 1)), 0, 255); hsv[..., 2] = np.clip(hsv[..., 2]*(1.0 if dk else 1.03), 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
 
 def polish(a, fg):
@@ -294,11 +315,15 @@ def polish(a, fg):
     chroma = float(np.sqrt((lab[..., 1]-128)**2+(lab[..., 2]-128)**2)[m].mean()); med = float(np.median(L[m]))
     key = getattr(flatten, 'key', 120)
     big = max(a.shape[:2]); r = max(8, big/60.0)             # clarity: large-radius unsharp on lightness
-    blur = cv2.GaussianBlur(L, (0, 0), r); amt = .15 if key >= 95 else .12
+    mf = m.astype(np.float32); sc = 4.0/max(4.0, r/4.0); sz = (max(1, int(L.shape[1]*sc)), max(1, int(L.shape[0]*sc)))
+    Ls = cv2.resize(L*mf, sz, interpolation=cv2.INTER_AREA); ms_ = cv2.resize(mf, sz, interpolation=cv2.INTER_AREA)       # blur over box pixels only, so backdrop never leaks into the box edge
+    blur = cv2.resize(cv2.GaussianBlur(Ls, (0, 0), r*sc)/np.maximum(cv2.GaussianBlur(ms_, (0, 0), r*sc), 1e-3), (L.shape[1], L.shape[0]), interpolation=cv2.INTER_LINEAR)
+    blur = np.where(m, blur, L); amt = .15 if key >= 95 else .12
     L = L+amt*(L-blur)
     x = np.clip(L/255, 0, 1); L = 255*np.clip(x+.9*x*(1-x)*(x-.5)*.5, 0, 1)   # mild S-curve
     lab[..., 0] = np.clip(L, 0, 255); out = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
-    bl = cv2.GaussianBlur(out, (0, 0), 1.2); out = np.clip(out.astype(np.float32)+.55*(out.astype(np.float32)-bl), 0, 255).astype(np.uint8)
+    of = out.astype(np.float32); bl = cv2.GaussianBlur(of*mf[..., None], (0, 0), 1.2)/np.maximum(cv2.GaussianBlur(mf, (0, 0), 1.2), 1e-3)[..., None]
+    out = np.where(m[..., None], np.clip(of+.55*(of-bl), 0, 255), of).astype(np.uint8)
     return out
 
 def edge_decolor(a, fg):
@@ -314,17 +339,54 @@ def edge_decolor(a, fg):
     wgt = (band*sel*.85)[..., None]; g = a.astype(np.float32).mean(2, keepdims=True)*np.ones((1, 1, 3), np.float32)
     return np.clip(a.astype(np.float32)*(1-wgt)+g*wgt, 0, 255).astype(np.uint8)
 
+def snap_edge(a, fg, r=None):
+    """Re-decide the mask inside a thin band around its outline using local colour models of the backdrop (outside) and the box (inside).
+    Returns (mask, moved): moved = share of the band that changed; -1 = result rejected (area off by >15%), original mask returned."""
+    m = (fg > 127).astype(np.uint8); h, w = m.shape
+    if r is None: r = max(6, int(max(h, w)*.005))
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r+1, 2*r+1))
+    sure_fg = cv2.erode(m, ker); sure_bg = 1-cv2.dilate(m, ker); band = (sure_fg == 0) & (sure_bg == 0)
+    if not band.any() or sure_fg.sum() < 100 or sure_bg.sum() < 100: return fg, 0.0
+    y0, y1 = np.where(band.any(1))[0][[0, -1]]; x0, x1 = np.where(band.any(0))[0][[0, -1]]
+    p = 6*r; y0, y1, x0, x1 = max(0, y0-p), min(h, y1+p+1), max(0, x0-p), min(w, x1+p+1)
+    lab = cv2.cvtColor(cv2.GaussianBlur(a[y0:y1, x0:x1], (0, 0), 1.0), cv2.COLOR_RGB2LAB).astype(np.float32); lab[..., 0] *= .5
+    def local(sel):
+        s = sel[y0:y1, x0:x1].astype(np.float32); den = cv2.GaussianBlur(s, (0, 0), 2.0*r)
+        return cv2.GaussianBlur(lab*s[..., None], (0, 0), 2.0*r)/np.maximum(den, 1e-4)[..., None], den
+    cf, df = local(sure_fg); cb, db = local(sure_bg)
+    d_f = np.sqrt(((lab-cf)**2).sum(2)); d_b = np.sqrt(((lab-cb)**2).sum(2))
+    al = d_b/np.maximum(d_b+d_f, 1e-3)
+    ok = (df > 1e-3) & (db > 1e-3) & (np.sqrt(((cf-cb)**2).sum(2)) > 12)        # only where box and backdrop really differ
+    out = m.copy(); sub = out[y0:y1, x0:x1]; bsub = band[y0:y1, x0:x1] & ok
+    sub[bsub] = (al[bsub] > .5).astype(np.uint8)
+    out = cv2.morphologyEx(out, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)); out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, lb, st, _ = cv2.connectedComponentsWithStats(out, 8)
+    if n > 2: out = (st[:, 4] >= .02*st[1:, 4].max())[lb].astype(np.uint8)*(lb > 0)
+    moved = float((out != m).sum())/max(1, int(band.sum()))
+    if not .85 < out.sum()/max(1, m.sum()) < 1.15: return fg, -1.0
+    return (out*255).astype(np.uint8), moved
+
+def edge_extend(a, fg, px=None):
+    """Colour decontamination: repaint the outer few pixels of the box with colour pulled from just inside it, so no backdrop colour sits in the feathered edge."""
+    m = (fg > 127).astype(np.uint8)
+    if px is None: px = max(4, int(max(m.shape)*.002))
+    d = cv2.distanceTransform(m, cv2.DIST_L2, 3)
+    core = (d > px).astype(np.float32); f = a.astype(np.float32)
+    den = cv2.GaussianBlur(core, (0, 0), px); fill = cv2.GaussianBlur(f*core[..., None], (0, 0), px)/np.maximum(den, 1e-4)[..., None]
+    wgt = (np.clip(1-(d-1)/px, 0, 1)*(den > 1e-3))[..., None]         # 1 at/outside the outline -> 0 at px inside
+    return np.clip(f*(1-wgt)+fill*wgt, 0, 255).astype(np.uint8)
+
 def smooth_fg(fg):
     """Removes the scalloped staircase on outlines: blur + re-threshold the mask (corners stay sharp at this radius)."""
-    sg = max(4.0, max(fg.shape)*.0035); b = cv2.GaussianBlur(fg, (0, 0), sg)
+    sg = max(2.5, max(fg.shape)*.0015); b = cv2.GaussianBlur(fg, (0, 0), sg)
     return ((b > 127)*255).astype(np.uint8)
 
-def cast_fix(a, fg):
+def cast_fix(a, fg, prot=None):
     """Pale/neutral boxes shot on a colored backdrop keep a blue bounce cast. Remove the blue/cyan side of the tint only (cream stays warm, gray goes neutral)."""
     m = fg > 127; lab = cv2.cvtColor(a, cv2.COLOR_RGB2LAB).astype(np.float32); A, B = lab[..., 1]-128, lab[..., 2]-128
     ch = np.sqrt(A**2+B**2)
     if np.median(lab[..., 0][m]) < 150 or ch[m].mean() > 22: return a
-    w = np.clip((30-ch)/12.0, 0, 1)                         # only low-chroma pixels; real artwork colors are left alone
+    w = np.clip((30-ch)/12.0, 0, 1)*(prot if prot is not None else 1)       # only low-chroma pixels; real artwork colors are left alone
     lab[..., 2] = 128+B+np.maximum(-B, 0)*.85*w              # blue -> neutral (b* negative = blue)
     lab[..., 1] = 128+A+np.maximum(-A, 0)*.5*w               # cyan/green-ish -> toward neutral
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
@@ -340,12 +402,13 @@ def gloss_fix(a, fg):
     lab[..., 0] = np.clip(L*(1-.12*w), 0, 255)
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
-def haze_fix(a, fg):
+def haze_fix(a, fg, prot=None):
     """Glossy light surfaces (e.g. the top of a white panel) mirror the blue backdrop as a faint gray-green/cyan sheen. On LIGHT, nearly neutral pixels with a blue/cyan-side tint, pull the tint to neutral. Real pastel artwork has more color than this and is left alone."""
     m = fg > 127; lab = cv2.cvtColor(a, cv2.COLOR_RGB2LAB).astype(np.float32); L, A, B = lab[..., 0], lab[..., 1]-128, lab[..., 2]-128
     ch = np.sqrt(A**2+B**2)
     side = np.clip(((-B)/5.0), 0, 1).clip(0, 1) + np.clip(((-A)-2)/5.0, 0, 1)*np.clip((4-B)/4.0, 0, 1)     # blue side or green/cyan side tint
     w = np.clip((L-70)/35.0, 0, 1)*np.clip((26-ch)/10.0, 0, 1)*np.clip(side, 0, 1)*m
+    if prot is not None: w = w*prot
     w = cv2.GaussianBlur(w.astype(np.float32), (0, 0), 4)
     lab[..., 1] = 128+A*(1-.85*w); lab[..., 2] = 128+B*(1-.85*w)
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
@@ -383,14 +446,15 @@ def _square_canvas(arr, bbox, pad, fill):
     canvas[y0-sy0:y1-sy0, x0-sx0:x1-sx0] = arr[y0:y1, x0:x1].reshape(y1-y0, x1-x0, ch)
     return canvas
 
-def despill(a, fg, ch):
+def despill(a, fg, ch, prot=None):
     """Colored backdrop (blue/green): pull the backdrop color out of the box. Full strength on the outline, gentle inside on near-neutral pixels."""
     f = a.astype(np.float32); o = [i for i in range(3) if i != ch]
     lim = np.maximum(f[..., o[0]], f[..., o[1]]); excess = np.maximum(f[..., ch]-lim, 0)
     fgb = (fg > 127).astype(np.uint8); k = max(9, int(max(a.shape[:2])*.012))
     band = (fgb - cv2.erode(fgb, np.ones((k, k), np.uint8))).astype(np.float32)
     band = cv2.GaussianBlur(band, (0, 0), k/3.0); band = np.clip(band*2.2, 0, 1)
-    inner = (excess < 28).astype(np.float32)*.6          # near-neutral surfaces tinted by bounce light; real blue/green artwork (big excess) is left alone
+    inner = .6*np.clip((40-excess)/24.0, 0, 1)          # (smooth ramp, no hard step)  near-neutral surfaces tinted by bounce light; real blue/green artwork (big excess) is left alone
+    if prot is not None: inner = inner*prot
     if float((excess[fgb > 0] > 15).mean()) > .10: inner = inner*0          # box has real blue/green artwork: only strip the thin fringe, never the interior
     keepblue = np.clip((120-excess)/70.0, 0, 1)             # strongly blue/green ink (big excess) is real artwork: spare it, only strip the weak spill fringe
     w = np.maximum(band*keepblue, inner)*(fgb > 0)
@@ -413,7 +477,10 @@ def run(src, out, long=2400, pad=.125, wide=False):
             else:
                 _m = cv2.resize(_m, (raw.shape[1], raw.shape[0]), interpolation=cv2.INTER_CUBIC); fg = ((_m > 127)*255).astype(np.uint8)
                 _n, _lb, _st, _ = cv2.connectedComponentsWithStats((fg > 0).astype(np.uint8), 8)
-                if _n > 2: _k = 1+int(np.argmax(_st[1:, cv2.CC_STAT_AREA])); fg = ((_lb == _k)*255).astype(np.uint8)     # keep the biggest piece (drops specks)
+                if _n > 2:                    # keep every real piece (lid beside base, sets); specks under 4% of the biggest piece are dropped
+                    _keep = _st[:, cv2.CC_STAT_AREA] >= .04*_st[1:, cv2.CC_STAT_AREA].max(); _keep[0] = False
+                    fg = (_keep[_lb]*255).astype(np.uint8)
+                    if int(_keep.sum()) > 1: warn.append('%d separate pieces kept' % int(_keep.sum()))
                 _fr = float((fg > 0).mean())
                 if not .015 < _fr < .75: problems.append('ai mask area %.3f' % _fr); fg = None
                 else:
@@ -467,27 +534,32 @@ def run(src, out, long=2400, pad=.125, wide=False):
     a, fg = a[T:B, L:R], fg[T:B, L:R]
     k = 3200/max(a.shape[:2])
     if k < 1: a = cv2.resize(a, None, fx=k, fy=k, interpolation=cv2.INTER_AREA); fg = cv2.resize(fg, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_LINEAR)
+    fg, edge_moved = snap_edge(a, fg)
+    if edge_moved < 0: warn.append('outline check rejected (area changed >15%): AI outline kept')
+    elif edge_moved > .30: warn.append('AI mask was loose: outline moved in %.0f%% of the edge band' % (edge_moved*100))
     if spill is not None:
         fg = cv2.erode(fg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))   # trim the thin backdrop-colored fringe at the outline
         _c0 = _chroma(a, fg > 127)
-        a = despill(a, fg, spill); a = edge_decolor(a, fg); a = cast_fix(a, fg); a = haze_fix(a, fg)      # gloss_fix removed (B4): it turned real navy/blue art black
+        _pr = art_protect(a, fg)
+        a = despill(a, fg, spill, _pr); a = edge_decolor(a, fg); a = cast_fix(a, fg, _pr); a = haze_fix(a, fg, _pr)      # gloss_fix removed (B4): it turned real navy/blue art black
         _c1 = _chroma(a, fg > 127)
         if _c0 >= 8 and _c1 < .75*_c0: problems.append('color strength dropped %.0f%% (%.1f->%.1f)' % ((1-_c1/_c0)*100, _c0, _c1))
     a, nd = clean_dust(a, fg); a = flatten(a, fg, tone=ov.get('tone')); a = pop(a); a = polish(a, fg); a = edge_define(a, fg)
     _px = a[fg > 127]; clip_frac = float(((_px.max(1) <= 4) | (_px.min(1) >= 251)).mean()) if len(_px) else 0.0
     if clip_frac > .05: problems.append('%.1f%% of box pure black/white' % (clip_frac*100))
     ok = not problems; why = '; '.join(problems) or 'ok'
+    a = edge_extend(a, fg)
     comp, bbox, soft, sh = composite(a, fg)
     # --- master (white background)
     can = _square_canvas(comp, bbox, pad, 255)
     im = Image.fromarray(can).resize((long, long), Image.LANCZOS)
-    _atomic(im, out+'.jpg', 'JPEG', quality=90, optimize=True, progressive=True); _atomic(im, out+'.webp', 'WEBP', quality=82, method=6)
+    _atomic(im, out+'.jpg', 'JPEG', quality=90, optimize=True, progressive=True, subsampling=0); _atomic(im, out+'.webp', 'WEBP', quality=82, method=4)
     # --- transparent cutout (shadow kept as faint black alpha)
     alpha = np.clip(soft+sh*(1-soft), 0, 1); col = np.where(alpha[..., None] > 1e-3, (a*soft[..., None])/np.maximum(alpha[..., None], 1e-3), 0)
     rgba = np.dstack([np.clip(col, 0, 255), alpha*255]).astype(np.uint8)
     cut = _square_canvas(rgba, bbox, pad, np.array([255, 255, 255, 0], np.uint8))
     cim = Image.fromarray(cut, 'RGBA').resize((long, long), Image.LANCZOS)
-    _atomic(cim, out+'-cut.png', 'PNG', optimize=True)
+    _atomic(cim, out+'-cut.png', 'PNG', compress_level=3)
     # --- wide hero 3200x1800: product in the right 55%, left 45% clean
     if wide:
         cw, chh = 3200, 1800; bgc = (242, 243, 245)
@@ -497,7 +569,7 @@ def run(src, out, long=2400, pad=.125, wide=False):
         crop = crop.resize((max(1, int(crop.width*sc)), max(1, int(crop.height*sc))), Image.LANCZOS)
         bg = Image.new('RGBA', (cw, chh), bgc+(255,)); cxw = int(cw*(.45+.55/2)); cyw = int(chh*.52)
         bg.alpha_composite(crop, (cxw-crop.width//2, cyw-crop.height//2)); _atomic(bg.convert('RGB'), out+'-wide.jpg', 'JPEG', quality=88, optimize=True, progressive=True)
-    return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'blown_in': round(blown_in, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
+    return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'edge_moved': round(edge_moved, 3), 'blown_in': round(blown_in, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
 
 def maskcheck(d, outp):
     fs = sorted(glob.glob(os.path.join(d, '*', '*.jpg'))); T = 300; cols = 8; rows = (len(fs)+cols-1)//cols
