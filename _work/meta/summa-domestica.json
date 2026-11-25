@@ -1,0 +1,35 @@
+{
+ "slug": "summa-domestica",
+ "title": "The Summa Domestica three-volume slipcase",
+ "box_style": "slipcase-drawer",
+ "industry": "religious-publishing",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes when they arrive.",
+ "photos": [
+  {
+   "file": "PXL_20261123_151728825.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "The Summa Domestica three-volume slipcase, straight-on front view."
+  },
+  {
+   "file": "PXL_20261123_151732280.MP.jpg",
+   "role": "open",
+   "wide": false,
+   "alt": "The Summa Domestica three-volume slipcase, opened to show the inside."
+  },
+  {
+   "file": "PXL_20261123_151736118.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "The Summa Domestica three-volume slipcase, three-quarter view with the lid on."
+  },
+  {
+   "file": "PXL_20261123_151738733.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "The Summa Domestica three-volume slipcase, three-quarter view with the lid on."
+  }
+ ]
+}

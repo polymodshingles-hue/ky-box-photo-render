@@ -1,0 +1,29 @@
+{
+ "slug": "rand-mcnally-eld-50",
+ "title": "Rand McNally ELD 50 box",
+ "box_style": "two-piece",
+ "industry": "other",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_142658865.jpg",
+   "role": "front",
+   "wide": true,
+   "alt": "Rand McNally ELD 50 box, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_142702701.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Rand McNally ELD 50 box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_142710356.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Rand McNally ELD 50 box, three-quarter view."
+  }
+ ]
+}

@@ -1,0 +1,41 @@
+{
+ "PXL_20261123_151313636.jpg": {
+  "skip": true,
+  "note": "b-cellars open two-piece: cutout keeps catching tent walls. Reshoot centered, or hand-cut."
+ },
+ "PXL_20261123_152032939.jpg": {
+  "skip": true,
+  "note": "concepts-kyrie lid-top view: pale lid blends with backdrop, tent wall touches box. Reshoot or hand-cut."
+ },
+ "PXL_20261123_152120926.jpg": {
+  "rect": [
+   0.0,
+   0.25,
+   0.8,
+   0.97
+  ],
+  "note": "warcraft front: tent-wall sliver at right removed by limiting the search area. Verified by Claude."
+ },
+ "PXL_20261123_152122786.jpg": {
+  "rect": [
+   0.0,
+   0.25,
+   0.8,
+   0.97
+  ],
+  "note": "warcraft front (second take): same fix as the first. Unverified, check it."
+ },
+ "PXL_20261123_152008471.MP.jpg": {
+  "note": "concepts front: keystone-corrected (shot slightly from above)",
+  "keystone": true
+ },
+ "PXL_20261124_142658865.jpg": {
+  "tone": "white"
+ },
+ "PXL_20261124_142702701.jpg": {
+  "tone": "white"
+ },
+ "PXL_20261124_142710356.jpg": {
+  "tone": "white"
+ }
+}
