@@ -8,8 +8,13 @@ HOME = os.path.expanduser('~'); ROOT = os.path.abspath(os.path.join(os.path.dirn
 slug = sys.argv[1]; FD = sys.argv[2] if len(sys.argv) > 2 else HOME+'/sp_full'; MD = sys.argv[3] if len(sys.argv) > 3 else HOME+'/sp_mask'
 CROP = (0, 900, 2160, 3500); OUTPX = 1400; OUT = os.path.join(ROOT, 'PHOTOS', '3-SPIN', slug); os.makedirs(OUT+'/frames', exist_ok=True)
 fs = sorted(glob.glob(FD+'/f_*.jpg')); N = len(fs); print(N, 'frames')
+if N < 8: sys.exit('ERROR: need at least 8 frames f_*.jpg in ' + FD)
 def mask_for(f, size):
-    k = os.path.basename(f)[:-4]; m = cv2.imread(f'{MD}/{k}.png', 0); m = cv2.resize(m, size, interpolation=cv2.INTER_CUBIC); m = ((m > 127)*255).astype(np.uint8)
+    k = os.path.splitext(os.path.basename(f))[0]
+    try:
+        with Image.open(os.path.join(MD, k + '.png')) as _mi: m = np.array(_mi.convert('L'))      # PIL: cv2.imread cannot open non-ASCII paths on Windows
+    except (OSError, SyntaxError): sys.exit('ERROR: missing or unreadable mask for frame ' + k + ' in ' + MD)
+    m = cv2.resize(m, size, interpolation=cv2.INTER_CUBIC); m = ((m > 127)*255).astype(np.uint8)
     n, lb, st, _ = cv2.connectedComponentsWithStats((m > 0).astype(np.uint8), 8)
     if n > 2: m = ((lb == 1+int(np.argmax(st[1:, 4])))*255).astype(np.uint8)
     cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE); fl = np.zeros_like(m); cv2.drawContours(fl, cs, -1, 255, cv2.FILLED)
@@ -17,25 +22,30 @@ def mask_for(f, size):
 # ---- pass 1: geometry + color statistics for the whole sequence
 W0, H0 = CROP[2]-CROP[0], CROP[3]-CROP[1]; boxes = []; bg_med = []; box_L = []; foot = []
 CACHE = f'{HOME}/sp_stats_{slug}.json'
-for f in (fs if not os.path.exists(CACHE) else []):
+def _sig():          # the stats cache is only valid for these exact frames, masks and crop
+    return [list(CROP), N, [[os.path.basename(f), os.stat(f).st_size, os.stat(f).st_mtime_ns] for f in fs],
+            [[q, os.stat(q).st_size, os.stat(q).st_mtime_ns] for q in sorted(glob.glob(MD + '/f_*.png'))]]
+try: _cc = json.load(open(CACHE, encoding='utf-8')); _cached = _cc if _cc.get('sig') == _sig() else None
+except (OSError, ValueError): _cached = None
+for f in (fs if _cached is None else []):
     im = np.array(Image.open(f).convert('RGB').crop(CROP)); m = mask_for(f, (W0, H0)); ys, xs = np.where(m > 0); boxes.append((xs.min(), ys.min(), xs.max(), ys.max()))
     small = cv2.resize(im, None, fx=.25, fy=.25, interpolation=cv2.INTER_AREA); ms = cv2.resize(m, (small.shape[1], small.shape[0])) > 127
     bgm = ~cv2.dilate(ms.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool); bg_med.append(np.median(small[bgm].reshape(-1, 3), 0))
     L = cv2.cvtColor(small, cv2.COLOR_RGB2LAB)[..., 0][ms]; box_L.append(L)
     hh = ys.max()-ys.min(); rows = m[int(ys.max()-hh*.06):ys.max()+1] > 0; foot.append(float(rows.sum(1).mean()))
-if os.path.exists(CACHE):
-    _c = json.load(open(CACHE)); boxes = _c['boxes']; bg_med = _c['bg_med']; foot = _c['foot']; allL = np.array(_c['allL'], np.float32)
+if _cached is not None:
+    _c = _cached; boxes = _c['boxes']; bg_med = _c['bg_med']; foot = _c['foot']; allL = np.array(_c['allL'], np.float32)
 else:
-    allL = np.concatenate([b.ravel() for b in box_L]).astype(np.float32)[::7]; json.dump({'boxes': np.array(boxes).tolist(), 'bg_med': np.array(bg_med).tolist(), 'foot': foot, 'allL': allL.tolist()}, open(CACHE, 'w'))
+    allL = np.concatenate([b.ravel() for b in box_L]).astype(np.float32)[::7]; json.dump({'sig': _sig(), 'boxes': np.array(boxes).tolist(), 'bg_med': np.array(bg_med).tolist(), 'foot': foot, 'allL': allL.tolist()}, open(CACHE + '.%d.tmp' % os.getpid(), 'w', encoding='utf-8')); os.replace(CACHE + '.%d.tmp' % os.getpid(), CACHE)
 boxes = np.array(boxes); axis_x = float(np.median((boxes[:, 0]+boxes[:, 2])/2)); base_y = float(np.median(boxes[:, 3])); top_y = float(boxes[:, 1].min())
-height = base_y-top_y; side = int(max(height*1.28, (boxes[:, 2]-boxes[:, 0]).max()*1.45)); half = side//2
+height = base_y-top_y; side = int(max(height*1.28, (boxes[:, 2]-boxes[:, 0]).max()*1.45)); side = min(side, W0, H0); half = side//2      # a very wide box gets less margin instead of crashing
 cx = axis_x; cy = top_y+height*.5+side*.02
 x0, y0 = int(cx-half), int(cy-half); x0 = max(0, min(W0-side, x0)); y0 = max(0, min(H0-side, y0)); print('window', x0, y0, side, 'axis', round(axis_x), 'base', round(base_y))
-gain = np.median(bg_med, 0); gain = gain.mean()/gain; gain = np.clip(gain, .9, 1.12); print('neutral gain', gain.round(3))     # one white balance for the whole spin (backdrop -> neutral)
+_bg = np.median(bg_med, 0); gain = np.clip(_bg.mean()/_bg, .9, 1.12) if _bg.max()-_bg.min() <= 40 else np.ones(3); print('neutral gain', gain.round(3))     # one white balance for the whole spin (backdrop -> neutral)
 medL = float(np.median(allL)); hiL = float(np.percentile(allL, 99.5))
 tgt = min(150.0, medL+(150-medL)*.8) if medL < 150 else medL; g = np.log(max(tgt, 1)/255)/np.log(max(medL, 1)/255); g = float(np.clip(g, .6, 1.2)); print('box median L', round(medL), '-> gamma', round(g, 3), 'hi', round(hiL))
 fw = float(np.median(boxes[:, 2]-boxes[:, 0])); sh_cx = axis_x-x0; sh_cy = base_y-y0
-def smooth(v, k=9): v = np.array(v, float); pad = np.r_[v[-k:], v, v[:k]]; return np.convolve(pad, np.ones(k)/k, 'same')[k:-k]
+def smooth(v, k=9): v = np.asarray(v, float); return np.convolve(np.pad(v, k//2, mode='wrap'), np.full(k, 1.0/k), mode='valid')      # circular moving average, always len(v) values
 bot_s = smooth(boxes[:, 3]); foot_s = smooth(foot)
 def make_shadow(i):
     sh = np.zeros((side, side), np.float32); cv2.ellipse(sh, (int(axis_x-x0), int(bot_s[i]-y0-max(foot_s[i], fw*.55)*.07)), (int(foot_s[i]*.58), int(max(foot_s[i], fw*.55)*.085)), 0, 0, 360, 1.0, -1)
@@ -62,16 +72,16 @@ html = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport"
 #h{position:absolute;bottom:10px;left:0;right:0;text-align:center;color:#888;font-size:14px;pointer-events:none}#b{position:absolute;top:8px;right:8px}button{border:1px solid #bbb;background:#fff;border-radius:6px;padding:6px 10px;cursor:pointer}</style></head>
 <body><div id="w"><canvas id="c"></canvas><div id="b"><button id="p">Pause</button></div><div id="h">Drag to rotate</div></div>
 <script>
-const N=__N__,imgs=[],c=document.getElementById('c'),x=c.getContext('2d');let cur=0,loaded=0,auto=true,drag=false,sx=0,sf=0,vel=0,last=0;
+const N=__N__,imgs=[],c=document.getElementById('c'),x=c.getContext('2d');let cur=0,loaded=0,auto=true,drag=false,sx=0,sf=0,vel=0,last=0,shown=-1;
 const pad=n=>String(n).padStart(3,'0');
-function show(i){i=((Math.round(i)%N)+N)%N;const im=imgs[i];if(im&&im.complete&&im.naturalWidth){if(c.width!==im.naturalWidth){c.width=im.naturalWidth;c.height=im.naturalHeight}x.drawImage(im,0,0)}}
+function show(i){i=((Math.round(i)%N)+N)%N;if(i===shown)return;const im=imgs[i];if(im&&im.complete&&im.naturalWidth){shown=i;if(c.width!==im.naturalWidth){c.width=im.naturalWidth;c.height=im.naturalHeight}x.drawImage(im,0,0)}}
 for(let i=0;i<N;i++){const im=new Image();im.onload=()=>{loaded++;if(i===0||loaded===N)show(cur)};im.src='frames/'+pad(i)+'.webp';imgs.push(im)}
-function loop(t){if(auto&&!drag&&loaded>5){cur+=(t-last)/1000*(N/10)}else if(!drag&&Math.abs(vel)>.02){cur+=vel;vel*=.94}last=t;show(cur);requestAnimationFrame(loop)}requestAnimationFrame(loop);
+function loop(t){if(auto&&!drag&&loaded>=N){cur+=(t-last)/1000*(N/10)}else if(!drag&&Math.abs(vel)>.02){cur+=vel;vel*=.94}last=t;show(cur);requestAnimationFrame(loop)}requestAnimationFrame(loop);
 const w=document.getElementById('w');
 w.addEventListener('pointerdown',e=>{drag=true;auto=false;sx=e.clientX;sf=cur;vel=0;document.getElementById('p').textContent='Play';w.setPointerCapture(e.pointerId)});
 w.addEventListener('pointermove',e=>{if(!drag)return;const p=cur;cur=sf-(e.clientX-sx)/w.clientWidth*N*1.2;vel=cur-p});
-w.addEventListener('pointerup',()=>{drag=false});
+w.addEventListener('pointerup',()=>{drag=false});w.addEventListener('pointercancel',()=>{drag=false;vel=0});
 document.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'){auto=false;cur-=1}if(e.key==='ArrowRight'){auto=false;cur+=1}});
 document.getElementById('p').onclick=e=>{auto=!auto;e.target.textContent=auto?'Pause':'Play';vel=0};
 </script></body></html>""".replace('__N__', str(N))
-open(OUT+'/index.html', 'w').write(html); print('done ->', OUT)
+open(OUT+'/index.html', 'w', encoding='utf-8').write(html); print('done ->', OUT)

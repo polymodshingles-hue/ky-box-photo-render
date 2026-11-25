@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Batch runner for the workhorse. Processes every photo in PHOTOS/1-ORIGINALS/<project>/ with post_edit.py into
 _work/processed/<project>/<file-stem>.jpg+.webp and writes _work/processed/report.json.
-Resumes safely: a photo is redone when the engine version, its mask file, its overrides or its wide flag changed. Exits 1 when any photo is CHECK or ERROR (names printed last). Photos marked "skip" in overrides.json are logged, not processed.
+Resumes safely: a photo is redone when the engine version, its mask file, its overrides or its wide flag changed. Exits 3 when any photo is CHECK or ERROR (exit 1 = crash/bad arguments) (names printed last). Photos marked "skip" in overrides.json are logged, not processed.
 Run from the 'ky box' folder:  python3 site/tools/run_batch.py [project-folder-name ...]"""
 import os, sys, json, glob, time, traceback
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
@@ -10,15 +10,15 @@ ROOT = os.path.abspath(os.path.join(HERE, '..', '..')); INBOX = os.path.join(ROO
 os.makedirs(OUT, exist_ok=True); rp = os.path.join(OUT, os.environ.get('REPORT_NAME', 'report.json'))
 def save_report():                      # atomic: a killed run can never leave a half-written report.json
     tmp = rp + '.tmp'
-    with open(tmp, 'w') as f: json.dump(report, f, indent=1)
+    with open(tmp, 'w', encoding='utf-8') as f: json.dump(report, f, indent=1)
     os.replace(tmp, rp)
-try: report = json.load(open(rp)) if os.path.exists(rp) else {}
+try: report = json.load(open(rp, encoding='utf-8')) if os.path.exists(rp) else {}
 except ValueError:
     os.replace(rp, rp + '.corrupt'); report = {}; print('report.json was corrupt: moved aside as report.json.corrupt, starting fresh')
 only = sys.argv[1:]
 def meta_for(d):
     mp = os.path.join(ROOT, '_work', 'meta', d + '.json')
-    return {x['file']: x for x in json.load(open(mp))['photos']} if os.path.exists(mp) else {}
+    return {x['file']: x for x in json.load(open(mp, encoding='utf-8'))['photos']} if os.path.exists(mp) else {}
 SKIPDIRS = {'processed', 'ready', 'blue-test'}
 _dirs = sorted(x for x in os.listdir(INBOX) if os.path.isdir(os.path.join(INBOX, x)) and x not in SKIPDIRS and not x.startswith(('_', '.')))
 _missing = [o for o in only if o not in _dirs]
@@ -34,17 +34,23 @@ for d in _dirs:
         name = os.path.basename(f); stem = os.path.splitext(name)[0]; key = f'{d}/{name}'; base = os.path.join(OUT, d, stem)
         ov = P.overrides(name); mp_ = P.mask_path(f); mt_ = os.path.getmtime(mp_) if os.path.exists(mp_) else None; ovs = json.dumps(ov, sort_keys=True)
         wide_ = bool(MT.get(name) and MT.get(name).get('wide')); old = report.get(key, {})
-        if old.get('status') in ('done', 'CHECK') and os.path.exists(base + '.jpg') and old.get('engine') == P.ENGINE and old.get('mask_mtime') == mt_ and old.get('ov') == ovs and old.get('wide') == wide_: continue
+        _st = os.stat(f); sig = [_st.st_size, _st.st_mtime_ns]; exts = ('.jpg', '.webp', '-cut.png') + (('-wide.jpg',) if wide_ else ())
+        _sizes = old.get('file_sizes') or {}
+        if (old.get('status') in ('done', 'CHECK') and old.get('engine') == P.ENGINE and old.get('mask_mtime') == mt_ and old.get('ov') == ovs and old.get('wide') == wide_
+                and (old.get('source_sig') is None or old.get('source_sig') == sig)           # a replaced photo is redone (rows from before this field are trusted once)
+                and all(os.path.isfile(base + e) and (e not in _sizes or os.path.getsize(base + e) == _sizes[e]) for e in exts)): continue
         if ov.get('skip'): report[key] = {'status': 'HOLD', 'note': ov.get('note', '')}; print('HOLD', key); continue
         mt = MT.get(name)
         if MT and (mt is None or not mt.get('role')): report[key] = {'status': 'EXTRA', 'note': 'extra view, not used'}; print('extra', key); continue
         t = time.time()
-        try: r = P.run(f, base, wide=bool(mt and mt.get('wide'))); r['status'] = 'done' if r.get('qc_ok') else 'CHECK'; r['mask_mtime'] = mt_; r['ov'] = ovs; r['secs'] = round(time.time()-t, 1); report[key] = r; print(r['status'], key, r['cutout'], r['qc'], r['secs'], 's')
+        try: r = P.run(f, base, wide=bool(mt and mt.get('wide'))); r['status'] = 'done' if r.get('qc_ok') else 'CHECK'; r['mask_mtime'] = mt_; r['source_sig'] = sig; r['file_sizes'] = {e: os.path.getsize(base + e) for e in exts}; r['ov'] = ovs; r['secs'] = round(time.time()-t, 1); report[key] = r; print(r['status'], key, r['cutout'], r['qc'], ('| WARN: ' + r['warn']) if r.get('warn') else '', r['secs'], 's')
         except Exception as e: report[key] = {'status': 'ERROR', 'error': str(e)}; print('ERROR', key, e); traceback.print_exc()
         save_report()
+for _k in [k for k in report if (not only or k.split('/')[0] in only) and not os.path.exists(os.path.join(INBOX, *k.split('/', 1)))]:
+    del report[_k]; print('dropped from report (photo no longer exists):', _k)          # deleted/renamed photos must not fail the run forever
 save_report()
 print('finished:', sum(1 for v in report.values() if v.get('status') == 'done'), 'done,', sum(1 for v in report.values() if v.get('status') == 'HOLD'), 'hold,', sum(1 for v in report.values() if v.get('status') == 'ERROR'), 'errors')
 bad = sorted(k for k, v in report.items() if v.get('status') in ('CHECK', 'ERROR') and (not only or k.split('/')[0] in only))
 print('FAILED PHOTOS (%d) - CHECK = failed the quality test, ERROR = crashed. Needs Claude:' % len(bad))
 for k in bad: print('  ', report[k]['status'], k, '-', report[k].get('qc') or report[k].get('error', ''))
-sys.exit(1 if bad else 0)
+sys.exit(3 if bad else 0)
