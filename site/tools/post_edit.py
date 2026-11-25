@@ -12,7 +12,7 @@ import sys, os, json, glob, numpy as np, cv2
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = 'v16c'
+ENGINE = "v16d"
 def overrides(name):
     p = os.path.join(HERE, 'overrides.json')
     return json.load(open(p, encoding='utf-8')).get(name, {}) if os.path.exists(p) else {}
@@ -380,6 +380,25 @@ def edge_extend(a, fg, px=None):
     wgt = (np.clip(1-(d-1)/px, 0, 1)*(den > 1e-3))[..., None]         # 1 at/outside the outline -> 0 at px inside
     return np.clip(f*(1-wgt)+fill*wgt, 0, 255).astype(np.uint8)
 
+def sharp_corners(hull, short=.035, reach=3.0):
+    """The AI mask rounds off the tips of box corners. Simplify the hull to a polygon; where two long edges are joined by a short chamfer edge, replace the chamfer by the point
+    where the two long edges meet (only if that point is close: within reach x the chamfer length). Returns the polygon or None."""
+    per = cv2.arcLength(hull, True)
+    if per < 200: return None
+    pts = cv2.approxPolyDP(hull, max(2.0, per*.0015), True).reshape(-1, 2).astype(np.float64)
+    for _ in range(40):
+        n = len(pts)
+        if n < 4: break
+        ln = np.hypot(*(np.roll(pts, -1, 0)-pts).T); i = int(np.argmin(ln))
+        if ln[i] > short*per: break
+        a, b = pts[(i-1) % n], pts[i]; c, d = pts[(i+1) % n], pts[(i+2) % n]
+        d1, d2 = b-a, c-d; den = d1[0]*d2[1]-d1[1]*d2[0]
+        if abs(den) < 1e-6: break
+        t = ((d[0]-a[0])*d2[1]-(d[1]-a[1])*d2[0])/den; P = a+t*d1
+        if np.hypot(*(P-(b+c)/2)) > reach*max(ln[i], 8.0): break
+        j = (i+1) % n; pts = np.array([P if k == i else pts[k] for k in range(n) if k != j])
+    return pts.round().astype(np.int32) if len(pts) >= 3 else None
+
 def convex_fix(fg, min_solidity=.975):
     """Glossy edges that reflect the bright backdrop get cut out of the AI mask as dashes and notches. A box piece whose outline is already almost convex (solidity >= .975)
     is replaced by its convex hull, which restores straight edges and corners. Concave pieces (open lids, handles, sets) are left alone. Returns (mask, area_added_fraction)."""
@@ -390,7 +409,10 @@ def convex_fix(fg, min_solidity=.975):
         if not cs: continue
         cc = max(cs, key=cv2.contourArea); hull = cv2.convexHull(cc); ha = cv2.contourArea(hull); ca = cv2.contourArea(cc)
         if ha > 0 and ca/ha >= min_solidity:
-            h = np.zeros_like(m); cv2.fillPoly(h, [hull], 1); added += int((h > out).sum()); out = np.maximum(out, h)
+            h = np.zeros_like(m); cv2.fillPoly(h, [hull], 1)
+            sp = sharp_corners(hull)
+            if sp is not None: cv2.fillPoly(h, [sp], 1)          # rounded-off box corners get their sharp tip back (never removes area)
+            added += int((h > out).sum()); out = np.maximum(out, h)
     return (out*255).astype(np.uint8), added/max(1, int(m.sum()))
 
 def smooth_fg(fg):
