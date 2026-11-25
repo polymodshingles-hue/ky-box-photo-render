@@ -15,7 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = 'v15'
 def overrides(name):
     p = os.path.join(HERE, 'overrides.json')
-    return json.load(open(p)).get(name, {}) if os.path.exists(p) else {}
+    return json.load(open(p, encoding='utf-8')).get(name, {}) if os.path.exists(p) else {}
 
 def mask_path(src):
     return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '_work', 'masks', os.path.basename(os.path.dirname(os.path.abspath(src))), os.path.splitext(os.path.basename(src))[0]+'.png')
@@ -32,6 +32,11 @@ def backdrop_sample(a, fg):
 def _chroma(a, m):
     lab = cv2.cvtColor(a, cv2.COLOR_RGB2LAB).astype(np.float32); A, B = lab[..., 1]-128, lab[..., 2]-128
     return float(np.sqrt(A**2+B**2)[m].mean()) if m.any() else 0.0
+
+def _atomic(img, path, fmt, **kw):
+    """Save to a temp name then rename, so a killed run never leaves a truncated deliverable."""
+    tmp = path + '.tmp'
+    img.save(tmp, fmt, **kw); os.replace(tmp, path)
 
 def load(p): return np.array(ImageOps.exif_transpose(Image.open(p)).convert('RGB'))
 
@@ -171,7 +176,7 @@ def qc_mask(m):
     bw = (xs.max()-xs.min())/sw; bh = (ys.max()-ys.min())/sh
     why = []
     if not .03 < frac < .72: why.append(f'area {frac:.2f}')
-    if xs.min() < sw*.01 or xs.max() > sw*.99 or ys.min() < sh*.01: why.append('touches frame edge')
+    if xs.min() < sw*.01 or xs.max() > sw*.99 or ys.min() < sh*.01 or ys.max() > sh*.99: why.append('touches frame edge')
     if sol < .60: why.append(f'ragged {sol:.2f}')
     if bw > .9 or bh > .93: why.append('too big')
     return (not why), ', '.join(why) or 'ok'
@@ -242,9 +247,9 @@ def apply_repairs(a, ov):
 def clean_dust(a, fg, thr=40, maxarea=14):
     box = cv2.erode((fg > 127).astype(np.uint8), np.ones((7, 7), np.uint8))
     med = cv2.medianBlur(a, 7); d = np.abs(a.astype(np.int16)-med.astype(np.int16)).max(2)
-    sp = ((d > thr) & (box > 0)).astype(np.uint8); n, lab, st, _ = cv2.connectedComponentsWithStats(sp); keep = np.zeros_like(sp)
-    for i in range(1, n):
-        if st[i, 4] <= maxarea and max(st[i, 2], st[i, 3]) <= 5: keep[lab == i] = 1
+    sp = ((d > thr) & (box > 0)).astype(np.uint8); n, lab, st, _ = cv2.connectedComponentsWithStats(sp)
+    good = (st[:, 4] <= maxarea) & (np.maximum(st[:, 2], st[:, 3]) <= 5); good[0] = False       # one pass over the labels (was one full-image scan per speck: 80 s on textured paper)
+    keep = good[lab].astype(np.uint8)
     if int(keep.sum()) > 5000: return a, -int(keep.sum())      # that many 'specks' is paper texture/weave, not dust: leave it alone (negative count = skipped)
     keep = cv2.dilate(keep, np.ones((3, 3), np.uint8)); out = cv2.inpaint(a, keep*255, 3, cv2.INPAINT_TELEA)
     return out, int(keep.sum())
@@ -400,8 +405,11 @@ def run(src, out, long=2400, pad=.125, wide=False):
     if not ov.get('method') and not ov.get('rect'):          # AI cutout is the only normal path; anything else is flagged
         if not os.path.exists(_mp): problems.append('no AI mask')
         else:
-            _m = cv2.imread(_mp, 0)
+            try:
+                with Image.open(_mp) as _mi: _m = np.array(_mi.convert('L'))      # PIL, not cv2.imread: cv2 cannot open non-ASCII paths on Windows
+            except (OSError, SyntaxError): _m = None
             if _m is None: problems.append('AI mask unreadable')
+            elif abs(_m.shape[1]/_m.shape[0]-raw.shape[1]/raw.shape[0]) > .02: problems.append('AI mask shape does not match the photo (remake the mask)')
             else:
                 _m = cv2.resize(_m, (raw.shape[1], raw.shape[0]), interpolation=cv2.INTER_CUBIC); fg = ((_m > 127)*255).astype(np.uint8)
                 _n, _lb, _st, _ = cv2.connectedComponentsWithStats((fg > 0).astype(np.uint8), 8)
@@ -416,7 +424,7 @@ def run(src, out, long=2400, pad=.125, wide=False):
                     if hole_frac > .15: problems.append('holes %.1f%% of box: check the cutout' % (hole_frac*100))
                     elif hole_frac > .002: warn.append('holes %.1f%% filled' % (hole_frac*100))
                     _y, _x = np.where(fg > 0); _sh, _sw = fg.shape
-                    if _x.min() < _sw*.01 or _x.max() > _sw*.99 or _y.min() < _sh*.01: problems.append('touches frame edge')
+                    if _x.min() < _sw*.01 or _x.max() > _sw*.99 or _y.min() < _sh*.01 or _y.max() > _sh*.99: problems.append('touches frame edge')
                     method = 'isnet'; mask_src = 'ai'
     if fg is None:
         a = apply_repairs(wb(raw), ov)
@@ -442,7 +450,10 @@ def run(src, out, long=2400, pad=.125, wide=False):
     ys, xs = np.where(fg > 127); H, W = fg.shape
     box_px = int(max(xs.max()-xs.min(), ys.max()-ys.min())+1)
     if box_px < 1500: problems.append('box only %d px (enlarged too much)' % box_px)
-    elif box_px < 1900: warn.append('box %d px (enlarged %.2fx)' % (box_px, 2400/box_px))
+    elif box_px < 1900: warn.append('box %d px (enlarged %.2fx)' % (box_px, 1920/box_px))
+    _rin = raw[fg > 127]; blown_in = float((_rin.min(1) >= 250).mean()) if len(_rin) else 0.0      # lost highlights are measured on the INPUT (edge_define hides them later)
+    if blown_in > .10: problems.append('%.1f%% of box blown out in the original photo' % (blown_in*100))
+    elif blown_in > .01: warn.append('%.1f%% of box blown out in the original' % (blown_in*100))
     med, clean = backdrop_sample(raw, fg)                          # B8: backdrop color from the border outside the mask, one sample for wb and spill
     if med is None:
         problems.append('backdrop not measurable (%.1f%% clean)' % (clean*100)); a = apply_repairs(wb(raw), ov)
@@ -470,13 +481,13 @@ def run(src, out, long=2400, pad=.125, wide=False):
     # --- master (white background)
     can = _square_canvas(comp, bbox, pad, 255)
     im = Image.fromarray(can).resize((long, long), Image.LANCZOS)
-    im.save(out+'.jpg', 'JPEG', quality=90, optimize=True, progressive=True); im.save(out+'.webp', 'WEBP', quality=82, method=6)
+    _atomic(im, out+'.jpg', 'JPEG', quality=90, optimize=True, progressive=True); _atomic(im, out+'.webp', 'WEBP', quality=82, method=6)
     # --- transparent cutout (shadow kept as faint black alpha)
     alpha = np.clip(soft+sh*(1-soft), 0, 1); col = np.where(alpha[..., None] > 1e-3, (a*soft[..., None])/np.maximum(alpha[..., None], 1e-3), 0)
     rgba = np.dstack([np.clip(col, 0, 255), alpha*255]).astype(np.uint8)
     cut = _square_canvas(rgba, bbox, pad, np.array([255, 255, 255, 0], np.uint8))
     cim = Image.fromarray(cut, 'RGBA').resize((long, long), Image.LANCZOS)
-    cim.save(out+'-cut.png', 'PNG', optimize=True)
+    _atomic(cim, out+'-cut.png', 'PNG', optimize=True)
     # --- wide hero 3200x1800: product in the right 55%, left 45% clean
     if wide:
         cw, chh = 3200, 1800; bgc = (242, 243, 245)
@@ -485,8 +496,8 @@ def run(src, out, long=2400, pad=.125, wide=False):
         crop = Image.fromarray(np.dstack([np.clip(col[y0:y1, x0:x1], 0, 255), alpha[y0:y1, x0:x1]*255]).astype(np.uint8), 'RGBA')
         crop = crop.resize((max(1, int(crop.width*sc)), max(1, int(crop.height*sc))), Image.LANCZOS)
         bg = Image.new('RGBA', (cw, chh), bgc+(255,)); cxw = int(cw*(.45+.55/2)); cyw = int(chh*.52)
-        bg.alpha_composite(crop, (cxw-crop.width//2, cyw-crop.height//2)); bg.convert('RGB').save(out+'-wide.jpg', 'JPEG', quality=88, optimize=True, progressive=True)
-    return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
+        bg.alpha_composite(crop, (cxw-crop.width//2, cyw-crop.height//2)); _atomic(bg.convert('RGB'), out+'-wide.jpg', 'JPEG', quality=88, optimize=True, progressive=True)
+    return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'blown_in': round(blown_in, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
 
 def maskcheck(d, outp):
     fs = sorted(glob.glob(os.path.join(d, '*', '*.jpg'))); T = 300; cols = 8; rows = (len(fs)+cols-1)//cols
