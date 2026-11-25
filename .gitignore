@@ -1,0 +1,18 @@
+# Photos, masks, renders and anything customer-related stay OUT of git (this repo is public)
+PHOTOS/0-DROP/
+PHOTOS/1-ORIGINALS/
+PHOTOS/2-DONE/
+PHOTOS/3-SPIN/
+PHOTOS/_review/
+PHOTOS/_tests/
+PHOTOS/_replaced/
+_work/masks/
+_work/processed/
+_work/t*/
+_work/stage/
+_work/view/
+__pycache__/
+*.pyc
+*.mp4
+*.zip
+*.tgz

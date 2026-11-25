@@ -1,0 +1,29 @@
+{
+ "slug": "eternity-now-nt-survey",
+ "title": "Eternity Now New Testament Survey box",
+ "box_style": "two-piece",
+ "industry": "religious-publishing",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_142729409.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "Eternity Now New Testament Survey box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_142723257.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Eternity Now New Testament Survey box, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_142733999.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Eternity Now New Testament Survey box, straight-on view."
+  }
+ ]
+}
