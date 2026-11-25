@@ -376,6 +376,19 @@ def edge_extend(a, fg, px=None):
     wgt = (np.clip(1-(d-1)/px, 0, 1)*(den > 1e-3))[..., None]         # 1 at/outside the outline -> 0 at px inside
     return np.clip(f*(1-wgt)+fill*wgt, 0, 255).astype(np.uint8)
 
+def convex_fix(fg, min_solidity=.975):
+    """Glossy edges that reflect the bright backdrop get cut out of the AI mask as dashes and notches. A box piece whose outline is already almost convex (solidity >= .975)
+    is replaced by its convex hull, which restores straight edges and corners. Concave pieces (open lids, handles, sets) are left alone. Returns (mask, area_added_fraction)."""
+    m = (fg > 127).astype(np.uint8); n, lb, st, _ = cv2.connectedComponentsWithStats(m, 8); out = m.copy(); added = 0
+    for i in range(1, n):
+        if st[i, cv2.CC_STAT_AREA] < 5000: continue
+        c = (lb == i).astype(np.uint8); cs, _ = cv2.findContours(c, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cs: continue
+        cc = max(cs, key=cv2.contourArea); hull = cv2.convexHull(cc); ha = cv2.contourArea(hull); ca = cv2.contourArea(cc)
+        if ha > 0 and ca/ha >= min_solidity:
+            h = np.zeros_like(m); cv2.fillPoly(h, [hull], 1); added += int((h > out).sum()); out = np.maximum(out, h)
+    return (out*255).astype(np.uint8), added/max(1, int(m.sum()))
+
 def smooth_fg(fg):
     """Removes the scalloped staircase on outlines: blur + re-threshold the mask (corners stay sharp at this radius)."""
     sg = max(2.5, max(fg.shape)*.0015); b = cv2.GaussianBlur(fg, (0, 0), sg)
@@ -490,6 +503,8 @@ def run(src, out, long=2400, pad=.125, wide=False):
                     if not ov.get('see_through'): fg = _filled        # "see_through": true in overrides.json only for a real open window
                     if hole_frac > .15: problems.append('holes %.1f%% of box: check the cutout' % (hole_frac*100))
                     elif hole_frac > .002: warn.append('holes %.1f%% filled' % (hole_frac*100))
+                    fg, _hadd = convex_fix(fg)
+                    if _hadd > .004: warn.append('edge notches closed (+%.1f%% area)' % (_hadd*100))
                     _y, _x = np.where(fg > 0); _sh, _sw = fg.shape
                     if _x.min() < _sw*.01 or _x.max() > _sw*.99 or _y.min() < _sh*.01 or _y.max() > _sh*.99: problems.append('touches frame edge')
                     method = 'isnet'; mask_src = 'ai'
@@ -534,11 +549,13 @@ def run(src, out, long=2400, pad=.125, wide=False):
     a, fg = a[T:B, L:R], fg[T:B, L:R]
     k = 3200/max(a.shape[:2])
     if k < 1: a = cv2.resize(a, None, fx=k, fy=k, interpolation=cv2.INTER_AREA); fg = cv2.resize(fg, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_LINEAR)
-    fg, edge_moved = snap_edge(a, fg)
+    fg0_area = int((fg > 127).sum())
+    fg, edge_moved = snap_edge(a, fg) if not os.environ.get('KY_NOSNAP') else (fg, 0.0)
+    snap_area = int((fg > 127).sum())
     if edge_moved < 0: warn.append('outline check rejected (area changed >15%): AI outline kept')
     elif edge_moved > .30: warn.append('AI mask was loose: outline moved in %.0f%% of the edge band' % (edge_moved*100))
     if spill is not None:
-        fg = cv2.erode(fg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))   # trim the thin backdrop-colored fringe at the outline
+        if not os.environ.get('KY_NOERODE'): fg = cv2.erode(fg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))   # trim the thin backdrop-colored fringe at the outline
         _c0 = _chroma(a, fg > 127)
         _pr = art_protect(a, fg)
         a = despill(a, fg, spill, _pr); a = edge_decolor(a, fg); a = cast_fix(a, fg, _pr); a = haze_fix(a, fg, _pr)      # gloss_fix removed (B4): it turned real navy/blue art black
@@ -569,7 +586,7 @@ def run(src, out, long=2400, pad=.125, wide=False):
         crop = crop.resize((max(1, int(crop.width*sc)), max(1, int(crop.height*sc))), Image.LANCZOS)
         bg = Image.new('RGBA', (cw, chh), bgc+(255,)); cxw = int(cw*(.45+.55/2)); cyw = int(chh*.52)
         bg.alpha_composite(crop, (cxw-crop.width//2, cyw-crop.height//2)); _atomic(bg.convert('RGB'), out+'-wide.jpg', 'JPEG', quality=88, optimize=True, progressive=True)
-    return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'edge_moved': round(edge_moved, 3), 'blown_in': round(blown_in, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
+    return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'edge_moved': round(edge_moved, 3), 'areas': [fg0_area, snap_area, int((fg > 127).sum())], 'blown_in': round(blown_in, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
 
 def maskcheck(d, outp):
     fs = sorted(glob.glob(os.path.join(d, '*', '*.jpg'))); T = 300; cols = 8; rows = (len(fs)+cols-1)//cols
