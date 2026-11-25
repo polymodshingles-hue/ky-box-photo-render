@@ -1,56 +1,125 @@
-#!/usr/bin/env python3
-"""Batch runner for the workhorse. Processes every photo in PHOTOS/1-ORIGINALS/<project>/ with post_edit.py into
-_work/processed/<project>/<file-stem>.jpg+.webp and writes _work/processed/report.json.
-Resumes safely: a photo is redone when the engine version, its mask file, its overrides or its wide flag changed. Exits 3 when any photo is CHECK or ERROR (exit 1 = crash/bad arguments) (names printed last). Photos marked "skip" in overrides.json are logged, not processed.
-Run from the 'ky box' folder:  python3 site/tools/run_batch.py [project-folder-name ...]"""
-import os, sys, json, glob, time, traceback
-HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
-import post_edit as P
-ROOT = os.path.abspath(os.path.join(HERE, '..', '..')); INBOX = os.path.join(ROOT, 'PHOTOS', '1-ORIGINALS'); OUT = os.path.join(ROOT, '_work', 'processed')
-os.makedirs(OUT, exist_ok=True); rp = os.path.join(OUT, os.environ.get('REPORT_NAME', 'report.json'))
-def save_report():                      # atomic: a killed run can never leave a half-written report.json
-    tmp = rp + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f: json.dump(report, f, indent=1)
-    os.replace(tmp, rp)
-try: report = json.load(open(rp, encoding='utf-8')) if os.path.exists(rp) else {}
-except ValueError:
-    os.replace(rp, rp + '.corrupt'); report = {}; print('report.json was corrupt: moved aside as report.json.corrupt, starting fresh')
-only = sys.argv[1:]
-def meta_for(d):
-    mp = os.path.join(ROOT, '_work', 'meta', d + '.json')
-    return {x['file']: x for x in json.load(open(mp, encoding='utf-8'))['photos']} if os.path.exists(mp) else {}
-SKIPDIRS = {'processed', 'ready', 'blue-test'}
-_dirs = sorted(x for x in os.listdir(INBOX) if os.path.isdir(os.path.join(INBOX, x)) and x not in SKIPDIRS and not x.startswith(('_', '.')))
-_missing = [o for o in only if o not in _dirs]
-if _missing: print('ERROR: project folder not found:', _missing); sys.exit(1)
-for d in _dirs:
-    if only and d not in only: continue
-    os.makedirs(os.path.join(OUT, d), exist_ok=True); MT = meta_for(d)
-    _all = sorted(glob.glob(os.path.join(INBOX, d, '*')))
-    for f in _all:
-        if os.path.isfile(f) and f.lower().endswith(('.jpeg', '.png', '.heic', '.heif', '.dng', '.tif', '.tiff', '.webp')):
-            k2 = f'{d}/{os.path.basename(f)}'; report[k2] = {'status': 'ERROR', 'error': 'unsupported file type (only .jpg is read)'}; print('ERROR', k2, 'unsupported file type')
-    for f in [x for x in _all if x.lower().endswith('.jpg')]:
-        name = os.path.basename(f); stem = os.path.splitext(name)[0]; key = f'{d}/{name}'; base = os.path.join(OUT, d, stem)
-        ov = P.overrides(name); mp_ = P.mask_path(f); mt_ = os.path.getmtime(mp_) if os.path.exists(mp_) else None; ovs = json.dumps(ov, sort_keys=True)
-        wide_ = bool(MT.get(name) and MT.get(name).get('wide')); old = report.get(key, {})
-        _st = os.stat(f); sig = [_st.st_size, _st.st_mtime_ns]; exts = ('.jpg', '.webp', '-cut.png') + (('-wide.jpg',) if wide_ else ())
-        _sizes = old.get('file_sizes') or {}
-        if (old.get('status') in ('done', 'CHECK') and old.get('engine') == P.ENGINE and old.get('mask_mtime') == mt_ and old.get('ov') == ovs and old.get('wide') == wide_
-                and (old.get('source_sig') is None or old.get('source_sig') == sig)           # a replaced photo is redone (rows from before this field are trusted once)
-                and all(os.path.isfile(base + e) and (e not in _sizes or os.path.getsize(base + e) == _sizes[e]) for e in exts)): continue
-        if ov.get('skip'): report[key] = {'status': 'HOLD', 'note': ov.get('note', '')}; print('HOLD', key); continue
-        mt = MT.get(name)
-        if MT and (mt is None or not mt.get('role')): report[key] = {'status': 'EXTRA', 'note': 'extra view, not used'}; print('extra', key); continue
-        t = time.time()
-        try: r = P.run(f, base, wide=bool(mt and mt.get('wide'))); r['status'] = 'done' if r.get('qc_ok') else 'CHECK'; r['mask_mtime'] = mt_; r['source_sig'] = sig; r['file_sizes'] = {e: os.path.getsize(base + e) for e in exts}; r['ov'] = ovs; r['secs'] = round(time.time()-t, 1); report[key] = r; print(r['status'], key, r['cutout'], r['qc'], ('| WARN: ' + r['warn']) if r.get('warn') else '', r['secs'], 's')
-        except Exception as e: report[key] = {'status': 'ERROR', 'error': str(e)}; print('ERROR', key, e); traceback.print_exc()
-        save_report()
-for _k in [k for k in report if (not only or k.split('/')[0] in only) and not os.path.exists(os.path.join(INBOX, *k.split('/', 1)))]:
-    del report[_k]; print('dropped from report (photo no longer exists):', _k)          # deleted/renamed photos must not fail the run forever
-save_report()
-print('finished:', sum(1 for v in report.values() if v.get('status') == 'done'), 'done,', sum(1 for v in report.values() if v.get('status') == 'HOLD'), 'hold,', sum(1 for v in report.values() if v.get('status') == 'ERROR'), 'errors')
-bad = sorted(k for k, v in report.items() if v.get('status') in ('CHECK', 'ERROR') and (not only or k.split('/')[0] in only))
-print('FAILED PHOTOS (%d) - CHECK = failed the quality test, ERROR = crashed. Needs Claude:' % len(bad))
-for k in bad: print('  ', report[k]['status'], k, '-', report[k].get('qc') or report[k].get('error', ''))
-sys.exit(3 if bad else 0)
+"""Render selected local projects and persist per-photo provenance and status."""
+import json
+import uuid
+import sys
+import time
+from pathlib import Path
+
+import cv2
+from PIL import Image
+import pipeline as F
+import post_edit as engine
+
+
+def signature(source, options):
+    mask = Path(engine.mask_path(source))
+    source_hash = F.digest(source)
+    mask_hash = None
+    if not options.get('rect') and not options.get('method'):
+        if not mask.is_file():
+            raise ValueError('Missing mask. Run make_masks.py for this project.')
+        with Image.open(mask) as image:
+            if image.info.get('source_sha256') != source_hash:
+                raise ValueError('Mask does not identify this original. Regenerate it with make_masks.py.')
+        mask_hash = F.digest(mask)
+    return dict(source=source_hash, mask=mask_hash, options=options, engine=engine.ENGINE)
+
+
+def run(selected):
+    cv2.setNumThreads(2)
+    folders = F.projects(selected)
+    try:
+        report = F.read_json(F.REPORT, {})
+        if not isinstance(report, dict) or any(not isinstance(v, dict) for v in report.values()):
+            raise ValueError('Invalid report structure')
+    except (json.JSONDecodeError, ValueError):
+        backup = F.REPORT.with_name(f'report.{uuid.uuid4().hex}.corrupt')
+        F.checked(F.REPORT).rename(backup)
+        print('Rebuilding damaged report. Original saved at', backup)
+        report = {}
+    pending = set()
+    bad = not folders
+    if not folders:
+        print("PENDING: no filed projects in PHOTOS/1-ORIGINALS")
+    for project in folders:
+        directory = F.ORIGINALS / project
+        try:
+            meta = F.manifest(project) if (F.META / (project + '.json')).exists() else {}
+        except (ValueError, KeyError, TypeError) as exc:
+            print('ERROR project metadata:', project, exc)
+            bad = True
+            continue
+        photos = {p['file'].casefold(): p for p in meta.get('photos', [])}
+        files = sorted(p for p in directory.iterdir() if p.is_file())
+        seen = set()
+        for source in files:
+            entry = photos.get(source.name.casefold())
+            name = entry['file'] if entry else source.name
+            key = f'{project}/{name}'
+            seen.add(key)
+            options = F.options(project, name, meta.get('render_defaults'))
+            old = report.get(key, {})
+            if entry is None:
+                row = dict(status='PENDING', note='Unclassified source')
+                pending.add(str(source.relative_to(F.ROOT)))
+            elif not entry.get('role'):
+                row = dict(status='EXTRA', note='Explicitly excluded in metadata')
+            elif options.get('skip'):
+                row = dict(status='HOLD', note=options.get('note', ''))
+            else:
+                try:
+                    sig = signature(source, options)
+                    base = F.checked(F.PROCESSED / project / Path(name).stem)
+                    base.parent.mkdir(parents=True, exist_ok=True)
+                    paths = {ext: F.checked(str(base) + ext) for ext in F.VARIANTS}
+                    if (old.get('signature') == sig and old.get('status') in ('done', 'CHECK')
+                            and all(p.is_file() and F.digest(p) == old.get('hashes', {}).get(ext)
+                                    for ext, p in paths.items())):
+                        row = old
+                    else:
+                        report[key] = dict(status='PROCESSING')
+                        F.atomic_json(F.REPORT, report)
+                        start = time.monotonic()
+                        row = engine.run(source, base, options=options)
+                        if signature(source, options) != sig:
+                            raise ValueError('Source or mask changed during render. Retry.')
+                        row.update(status='done' if row['qc_ok'] else 'CHECK', signature=sig,
+                                   hashes={ext: F.digest(p) for ext, p in paths.items()},
+                                   secs=round(time.monotonic() - start, 2))
+                except Exception as exc:
+                    row = dict(status='ERROR', error=str(exc))
+            report[key] = row
+            print(row['status'], key, row.get('error') or row.get('qc') or row.get('note', ''), row.get('warn', ''))
+            bad |= row['status'] in ('ERROR', 'CHECK', 'PENDING')
+            if row != old:
+                F.atomic_json(F.REPORT, report)
+        for ph in photos.values():
+            key = f"{project}/{ph['file']}"
+            if ph.get('role') and key not in seen:
+                seen.add(key)
+                report[key] = dict(status='ERROR', error='Listed original is missing')
+                print('ERROR', key, 'listed original is missing')
+                bad = True
+        for key in list(report):
+            if key.startswith(project + '/') and key not in seen:
+                del report[key]
+        if not meta:
+            print('PENDING missing project manifest:', project)
+            bad = True
+    F.atomic_json(F.REPORT, report)
+    drop = F.ROOT / 'PHOTOS/0-DROP'
+    pending.update(str(p.relative_to(F.ROOT)) for p in drop.rglob('*') if p.is_file())
+    for folder in F.projects([]):
+        pending.update(str(p.relative_to(F.ROOT)) for p in (F.ORIGINALS / folder).iterdir()
+                       if p.is_file() and p.suffix.lower() in F.VIDEOS)
+    pending.update(str(Path('PHOTOS/1-ORIGINALS') / key) for key, row in report.items()
+                   if row['status'] == 'PENDING' and (F.ORIGINALS / key).is_file())
+    F.atomic_json(F.WORK / 'pending.json', sorted(pending))
+    if pending:
+        print('PENDING intake: see _work/pending.json')
+    return 3 if bad or pending else 0
+
+
+if __name__ == '__main__':
+    with F.writer():
+        sys.exit(run(sys.argv[1:]))

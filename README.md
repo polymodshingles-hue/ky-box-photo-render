@@ -1,11 +1,13 @@
 # KY Box photo render
 
-Pipeline that turns phone photos of boxes into website-ready images (AI cutout, white or transparent background, wide hero) and 360 spins.
+This workhorse creates local studio images from filed phone photos. It writes finals under `PHOTOS/2-DONE/<project>` and spins under `PHOTOS/3-SPIN/<project>`.
 
-- `site/tools/process_all.py` : one command for photos (run_batch -> make_review -> finalize). See `site/tools/WORKHORSE.md`.
-- `site/tools/post_edit.py` : the image engine (version in `ENGINE`).
-- `site/tools/build_spin.py` : 360 spin builder (frames + masks in, web viewer out).
-- `_work/meta/` : one JSON per project (title, style, industry, photo roles).
-- `site/tools/overrides.json` : per-photo fixes (rect, trim, tone, keystone, skip).
+1. File originals and classify the project in `_work/meta/<project>.json`.
+2. On the machine with rembg, run `python site/tools/make_masks.py PROJECT`. Copy the resulting PNG masks to the same relative location on the workhorse.
+3. Run `python site/tools/process_all.py PROJECT` on Windows. Omit the project to process all filed projects.
 
-Photos, masks and renders are not stored here (public repo). `python tests/check_meta.py` is the PR check for the meta files.
+Each included photo gets a 2400×2400 JPEG, WebP and transparent PNG, plus a 3200×1800 wide JPEG. The sidecar maps each final to its original. See [Workhorse instructions](site/tools/WORKHORSE.md) for dependencies, intake, mask migration, quality checks and recovery.
+
+Use `python site/tools/build_spin.py PROJECT FRAMES_DIR MASKS_DIR` for a spin. Supply full, oriented frame masks named after numerically indexed frames such as `f_001.jpg` and `f_001.png`.
+
+Run `python tests/check_meta.py` and `python -m unittest discover -s tests` for the metadata and synthetic regression checks. [Implementation handoff](WORKHORSE_HANDOFF.md).

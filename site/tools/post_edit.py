@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""KY Box photo post-edit (v4). Studio look: white-balance, cutout, pure-white backdrop + contact shadow, even lighting,
-color pop, dust/lint cleanup, tear/defect repair from overrides.json, consistent square canvas, 2000px jpg+webp.
-Usage:
-  python3 post_edit.py IN.jpg OUT_BASE            process one photo
-  python3 post_edit.py --maskcheck DIR OUT.jpg    preview cutouts for every photo under DIR (contact sheet, fast)
-overrides.json (same folder), keyed by file name:
-  {"PXL_x.jpg": {"rect":[l,t,r,b], "repair":[[l,t,r,b],...], "clone":[[src_l,src_t,src_r,src_b,dst_l,dst_t],...], "note":"..."}}
-  all numbers are fractions (0-1) of the FULL photo. rect = where the box is (forces the cutout). repair = inpaint those areas
-  (tears, rips, scuffs). clone = copy a clean patch over a damaged spot (for printed art)."""
+"""Local studio renderer. Run post_edit.py IN.jpg OUT_BASE, or --maskcheck DIR SHEET.jpg."""
 import sys, os, json, glob, numpy as np, cv2
-from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from pathlib import Path
+import tempfile
+from PIL import Image, ImageOps, ImageCms
+
+SRGB_PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+import pipeline as flow
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = "v16d"
-def overrides(name):
-    p = os.path.join(HERE, 'overrides.json')
-    return json.load(open(p, encoding='utf-8')).get(name, {}) if os.path.exists(p) else {}
+ENGINE = "v17"
+
+def validate_output(path, source=None):
+    dest = Path(path).resolve()
+    protected = (flow.ORIGINALS, flow.ROOT / 'site')
+    if dest == source or any(dest.is_relative_to(root) for root in protected):
+        raise ValueError(f'Protected output destination: {dest}')
 
 def mask_path(src):
     return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '_work', 'masks', os.path.basename(os.path.dirname(os.path.abspath(src))), os.path.splitext(os.path.basename(src))[0]+'.png')
@@ -48,16 +48,24 @@ def art_protect(a, fg):
 
 def _atomic(img, path, fmt, **kw):
     """Save to a temp name then rename, so a killed run never leaves a truncated deliverable."""
-    tmp = path + '.tmp'
-    img.save(tmp, fmt, **kw); os.replace(tmp, path)
+    validate_output(path)
+    kw.setdefault('icc_profile', SRGB_PROFILE)
+    with tempfile.NamedTemporaryFile(dir=Path(path).parent, delete=False) as file:
+        tmp = Path(file.name)
+    try:
+        img.save(tmp, fmt, **kw)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 def load(p):
     im = ImageOps.exif_transpose(Image.open(p)); icc = im.info.get('icc_profile')
     if icc:                                     # wide-gamut phone shots (Display P3) must be converted to sRGB, not just relabelled
         try:
-            import io; from PIL import ImageCms
+            import io
             im = ImageCms.profileToProfile(im.convert('RGB'), ImageCms.ImageCmsProfile(io.BytesIO(icc)), ImageCms.createProfile('sRGB'), outputMode='RGB')
-        except Exception: pass
+        except (OSError, ValueError, ImageCms.PyCMSError) as exc:
+            raise ValueError(f'Invalid embedded ICC profile in {p}') from exc
     return np.array(im.convert('RGB'))
 
 def wb(a, med=None):
@@ -69,10 +77,7 @@ def wb(a, med=None):
     med = np.maximum(np.asarray(med, float), 1)
     if med.max()-med.min() > 40:   # colored backdrop (blue/green): do not white-balance on it, that would tint the whole box
         return a
-    if med.mean() < 215:   # gray backdrop: neutralize the color cast only; do not brighten (keeps pale boxes separable from the backdrop)
-        g = np.clip(med.mean()/med, .8, 1.25)
-    else:
-        g = np.clip(243/med, .8, 1.45)
+    g = np.clip(med.mean()/med, .8, 1.25)
     return np.clip(a*g, 0, 255).astype(np.uint8)
 
 # ---------- cutout ----------
@@ -86,12 +91,10 @@ def _grabcut_refine(s, fg0, iters=4):
     return ((m == cv2.GC_FGD) | (m == cv2.GC_PR_FGD)).astype(np.uint8)
 
 def _clean(fgm):
-    fgm = (fgm > 0).astype(np.uint8)*255
-    n, lab, st, _ = cv2.connectedComponentsWithStats(fgm)
-    if n > 1: fgm = ((lab == 1+np.argmax(st[1:, 4]))*255).astype(np.uint8)
-    fgm = cv2.morphologyEx(fgm, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    ff = fgm.copy(); hh, ww = ff.shape; mk = np.zeros((hh+2, ww+2), np.uint8); cv2.floodFill(ff, mk, (0, 0), 255)
-    return fgm | cv2.bitwise_not(ff)
+    mask = np.pad((fgm > 0).astype(np.uint8) * 255, 1)
+    outside = mask.copy()
+    cv2.floodFill(outside, None, (0, 0), 255)
+    return (mask | cv2.bitwise_not(outside))[1:-1, 1:-1]
 
 def mask_flood(s, cut=0, rect=None):
     """Backdrop = smooth (low-gradient) pixels connected to the frame edge; box = what's left, then edge-refined."""
@@ -271,6 +274,7 @@ def clean_dust(a, fg, thr=40, maxarea=14):
     good = (st[:, 4] <= maxarea) & (np.maximum(st[:, 2], st[:, 3]) <= 5); good[0] = False       # one pass over the labels (was one full-image scan per speck: 80 s on textured paper)
     keep = good[lab].astype(np.uint8)
     if int(keep.sum()) > 5000: return a, -int(keep.sum())      # that many 'specks' is paper texture/weave, not dust: leave it alone (negative count = skipped)
+    if not keep.any(): return a, 0
     keep = cv2.dilate(keep, np.ones((3, 3), np.uint8)); out = cv2.inpaint(a, keep*255, 3, cv2.INPAINT_TELEA)
     return out, int(keep.sum())
 
@@ -291,7 +295,7 @@ def flatten(a, fg, strength=.65, tone=None):
     elif tone == 'silver': tgt_med = med                                        # override: metallic/gray box, keep its captured tone
     elif med > 125: tgt_med = med+(214-med)*float(np.clip(.25+(med-150)/40.0*.4, .25, .65))       # white box: clean light. Silver / light gray (median < 190) keep their metal tone
     else: tgt_med = med
-    g = np.log(max(tgt_med, 1)/255)/np.log(max(med, 1)/255); L2 = 255*(L2/255)**np.clip(g, .70, 1.45)
+    g = 1.0 if med >= 254.99 else np.log(max(tgt_med, 1)/255)/np.log(max(med, 1)/255); L2 = 255*(L2/255)**np.clip(g, .70, 1.45)
     if dark_neutral:                                                            # true black point
         lo = min(np.percentile(L2[m > 0], .5), 8); L2 = np.clip((L2-lo*.9)*(255/max(255-lo*.9, 1)), 0, 255)
     hi = np.percentile(L2[m > 0], 99.5)
@@ -339,7 +343,6 @@ def edge_decolor(a, fg):
     wgt = (band*sel*.85)[..., None]; g = a.astype(np.float32).mean(2, keepdims=True)*np.ones((1, 1, 3), np.float32)
     return np.clip(a.astype(np.float32)*(1-wgt)+g*wgt, 0, 255).astype(np.uint8)
 
-GROW = int(os.environ.get('KY_GROW', 2)); GROW_ALL = os.environ.get('KY_GROW_ALL', '1') == '1'
 def snap_edge(a, fg, r=None):
     """Re-decide the mask inside a thin band around its outline using local colour models of the backdrop (outside) and the box (inside).
     Returns (mask, moved): moved = share of the band that changed; -1 = result rejected (area off by >15%), original mask returned."""
@@ -352,20 +355,21 @@ def snap_edge(a, fg, r=None):
     p = 6*r; y0, y1, x0, x1 = max(0, y0-p), min(h, y1+p+1), max(0, x0-p), min(w, x1+p+1)
     lab = cv2.cvtColor(cv2.GaussianBlur(a[y0:y1, x0:x1], (0, 0), 1.0), cv2.COLOR_RGB2LAB).astype(np.float32); lab[..., 0] *= .5
     def local(sel):
-        s = sel[y0:y1, x0:x1].astype(np.float32); den = cv2.GaussianBlur(s, (0, 0), 2.0*r)
-        return cv2.GaussianBlur(lab*s[..., None], (0, 0), 2.0*r)/np.maximum(den, 1e-4)[..., None], den
+        weights = sel[y0:y1, x0:x1].astype(np.float32)
+        height, width = weights.shape
+        size = (max(1, width // 4), max(1, height // 4))
+        def average(value):
+            small = cv2.resize(value, size, interpolation=cv2.INTER_AREA)
+            blurred = cv2.GaussianBlur(small, (0, 0), r / 2.0)
+            return cv2.resize(blurred, (width, height), interpolation=cv2.INTER_LINEAR)
+        density = average(weights)
+        return average(lab * weights[..., None]) / np.maximum(density, 1e-4)[..., None], density
     cf, df = local(sure_fg); cb, db = local(sure_bg)
     d_f = np.sqrt(((lab-cf)**2).sum(2)); d_b = np.sqrt(((lab-cb)**2).sum(2))
     al = d_b/np.maximum(d_b+d_f, 1e-3)
     ok = (df > 1e-3) & (db > 1e-3) & (np.sqrt(((cf-cb)**2).sum(2)) > 12)        # only where box and backdrop really differ
     out = m.copy(); sub = out[y0:y1, x0:x1]; bsub = band[y0:y1, x0:x1] & ok
     sub[bsub] = (al[bsub] > .5).astype(np.uint8)
-    und = np.zeros_like(out); und[y0:y1, x0:x1] = (band[y0:y1, x0:x1] & ~ok).astype(np.uint8)      # edge stretches where box and backdrop look alike (bright glossy rim on a light backdrop): colour cannot decide,
-    gr = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*GROW+1, 2*GROW+1)))        # so keep a thin rim (GROW px) outside the AI outline instead of cutting it
-    out = np.maximum(out, (band.astype(np.uint8) & gr) if GROW_ALL else (und & gr))
-    out = cv2.morphologyEx(out, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)); out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    n, lb, st, _ = cv2.connectedComponentsWithStats(out, 8)
-    if n > 2: out = (st[:, 4] >= .02*st[1:, 4].max())[lb].astype(np.uint8)*(lb > 0)
     moved = float((out != m).sum())/max(1, int(band.sum()))
     if not .85 < out.sum()/max(1, m.sum()) < 1.15: return fg, -1.0
     return (out*255).astype(np.uint8), moved
@@ -399,7 +403,7 @@ def sharp_corners(hull, short=.035, reach=3.0):
         j = (i+1) % n; pts = np.array([P if k == i else pts[k] for k in range(n) if k != j])
     return pts.round().astype(np.int32) if len(pts) >= 3 else None
 
-def convex_fix(fg, min_solidity=.975):
+def convex_fix(fg, min_solidity=.975, restore_tips=False):
     """Glossy edges that reflect the bright backdrop get cut out of the AI mask as dashes and notches. A box piece whose outline is already almost convex (solidity >= .975)
     is replaced by its convex hull, which restores straight edges and corners. Concave pieces (open lids, handles, sets) are left alone. Returns (mask, area_added_fraction)."""
     m = (fg > 127).astype(np.uint8); n, lb, st, _ = cv2.connectedComponentsWithStats(m, 8); out = m.copy(); added = 0
@@ -410,7 +414,7 @@ def convex_fix(fg, min_solidity=.975):
         cc = max(cs, key=cv2.contourArea); hull = cv2.convexHull(cc); ha = cv2.contourArea(hull); ca = cv2.contourArea(cc)
         if ha > 0 and ca/ha >= min_solidity:
             h = np.zeros_like(m); cv2.fillPoly(h, [hull], 1)
-            sp = sharp_corners(hull)
+            sp = sharp_corners(hull) if restore_tips else None
             if sp is not None: cv2.fillPoly(h, [sp], 1)          # rounded-off box corners get their sharp tip back (never removes area)
             added += int((h > out).sum()); out = np.maximum(out, h)
     return (out*255).astype(np.uint8), added/max(1, int(m.sum()))
@@ -428,17 +432,6 @@ def cast_fix(a, fg, prot=None):
     w = np.clip((30-ch)/12.0, 0, 1)*(prot if prot is not None else 1)       # only low-chroma pixels; real artwork colors are left alone
     lab[..., 2] = 128+B+np.maximum(-B, 0)*.85*w              # blue -> neutral (b* negative = blue)
     lab[..., 1] = 128+A+np.maximum(-A, 0)*.5*w               # cyan/green-ish -> toward neutral
-    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
-
-def gloss_fix(a, fg):
-    """Glossy/laminated BLACK boxes mirror the blue backdrop and read blue/teal/purple-gray. Only for boxes that are mostly black: on dark pixels with a blue-side tint (b* < 0), pull the color toward neutral and deepen the haze. Colored artwork (green, red, orange...) and boxes that are not mostly black are untouched."""
-    m = fg > 127; lab = cv2.cvtColor(a, cv2.COLOR_RGB2LAB).astype(np.float32); L, A, B = lab[..., 0], lab[..., 1]-128, lab[..., 2]-128
-    ch = np.sqrt(A**2+B**2)
-    if np.median(L[m]) > 85 or ch[m].mean() > 26: return a
-    w = np.clip((130-L)/50.0, 0, 1)*np.clip((55-ch)/20.0, 0, 1)*np.clip(-B/6.0, 0, 1)*m
-    w = cv2.GaussianBlur(w.astype(np.float32), (0, 0), 3)
-    lab[..., 1] = 128+A*(1-.9*w); lab[..., 2] = 128+B*(1-.9*w)
-    lab[..., 0] = np.clip(L*(1-.12*w), 0, 255)
     return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
 def haze_fix(a, fg, prot=None):
@@ -467,14 +460,16 @@ def edge_define(a, fg):
 def composite(a, fg):
     """Returns white-background composite, box bbox, and the soft mask + shadow alpha (for the transparent cutout)."""
     h, w, _ = a.shape; k = max(3, int(w*.0015)) | 1
-    soft2 = np.clip((cv2.GaussianBlur(fg, (k*2+1, k*2+1), 0).astype(float)/255-.08)/.84, 0, 1)
+    soft2 = np.clip((cv2.GaussianBlur(fg, (k*2+1, k*2+1), 0).astype(np.float32)/255-.08)/.84, 0, 1)
     soft = soft2[..., None]
     ys, xs = np.where(fg > 127); yb = ys.max(); xl, xr = xs.min(), xs.max()
     bh = yb-ys.min(); band = max(4, int(bh*.05)); drop = max(3, int(bh*.012)); m = (fg > 127).astype(np.uint8)
-    up = np.zeros_like(m); up[:-band] = m[band:]; edge = (m & (1-up)).astype(np.float32)
+    edge = np.zeros_like(m, dtype=np.float32)
+    floor = max(0, yb - band + 1)
+    edge[floor:yb+1] = m[floor:yb+1]
     edge = cv2.warpAffine(edge, np.float32([[1, 0, 0], [0, 1, drop]]), (w, h))
-    sh2 = np.clip(cv2.GaussianBlur(edge, (0, 0), max(6, (xr-xl)*.012))*.55, 0, .30)*(1-soft2); sh = sh2[..., None]
-    comp = np.clip(a*soft+(255*(1-sh)*np.ones_like(a, dtype=float))*(1-soft), 0, 255).astype(np.uint8)
+    sh2 = np.clip(cv2.GaussianBlur(edge, (0, 0), max(6, (xr-xl)*.012))*.55, 0, .30); sh = sh2[..., None]
+    comp = np.clip(a*soft+(255*(1-sh))*(1-soft), 0, 255).astype(np.uint8)
     return comp, (xl, ys.min(), xr, yb), soft2, sh2
 
 def _square_canvas(arr, bbox, pad, fill):
@@ -500,37 +495,79 @@ def despill(a, fg, ch, prot=None):
     f[..., ch] = f[..., ch]-excess*w
     return np.clip(f, 0, 255).astype(np.uint8)
 
-def run(src, out, long=2400, pad=.125, wide=False):
-    """Writes OUT.jpg (master q90), OUT.webp, OUT-cut.png (transparent), and OUT-wide.jpg (3200x1800) when wide=True."""
-    name = os.path.basename(src); ov = overrides(name)
+def boundary_support(rgb, mask):
+    height, width = mask.shape
+    scale = min(1, 800 / max(height, width))
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    image = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+    binary = (cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST) > 127).astype(np.uint8)
+    outline = binary - cv2.erode(binary, np.ones((3, 3), np.uint8))
+    if not outline.any():
+        return 0.0
+    channels = cv2.split(cv2.GaussianBlur(image, (3, 3), 0))
+    edges = np.maximum.reduce([cv2.Canny(ch, 15, 45) for ch in channels])
+    nearby = cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    return float((nearby[outline > 0] > 0).mean())
+
+def run(src, out, long=2400, pad=.125, wide=True, options=None):
+    name = os.path.basename(src)
+    out = str(out)
+    for ext in flow.VARIANTS:
+        validate_output(out + ext, Path(src).resolve())
+    ov = flow.options(Path(src).parent.name, name) if options is None else options
+    if ov.get('skip'): raise ValueError('Photo is held by override')
     raw = load(src); problems = []; warn = []; fg = None; method = None; hole_frac = 0.0; mask_src = 'none'
+    if 'focus_rect' in ov:
+        l, t, r, b = ov['focus_rect']
+        height, width = raw.shape[:2]
+        if not (0 <= l < r <= 1 and 0 <= t < b <= 1):
+            raise ValueError('Invalid focus reference coordinates')
+        patch = raw[round(t*height):round(b*height), round(l*width):round(r*width)]
+        if min(patch.shape[:2]) < 8:
+            raise ValueError('Focus reference is too small')
+        detail = cv2.Laplacian(cv2.cvtColor(patch, cv2.COLOR_RGB2GRAY), cv2.CV_32F)
+        if np.percentile(np.abs(detail), 90) < ov['focus_min']:
+            problems.append('Printed focus reference failed')
     _mp = mask_path(src)
     if not ov.get('method') and not ov.get('rect'):          # AI cutout is the only normal path; anything else is flagged
         if not os.path.exists(_mp): problems.append('no AI mask')
         else:
             try:
-                with Image.open(_mp) as _mi: _m = np.array(_mi.convert('L'))      # PIL, not cv2.imread: cv2 cannot open non-ASCII paths on Windows
+                with Image.open(_mp) as _mi:
+                    if _mi.info.get('source_sha256') != flow.digest(src):
+                        problems.append('Mask does not identify this original')
+                    _m = np.array(_mi.convert('L'))      # PIL, not cv2.imread: cv2 cannot open non-ASCII paths on Windows
             except (OSError, SyntaxError): _m = None
             if _m is None: problems.append('AI mask unreadable')
             elif abs(_m.shape[1]/_m.shape[0]-raw.shape[1]/raw.shape[0]) > .02: problems.append('AI mask shape does not match the photo (remake the mask)')
             else:
                 _m = cv2.resize(_m, (raw.shape[1], raw.shape[0]), interpolation=cv2.INTER_CUBIC); fg = ((_m > 127)*255).astype(np.uint8)
-                _n, _lb, _st, _ = cv2.connectedComponentsWithStats((fg > 0).astype(np.uint8), 8)
-                if _n > 2:                    # keep every real piece (lid beside base, sets); specks under 4% of the biggest piece are dropped
-                    _keep = _st[:, cv2.CC_STAT_AREA] >= .04*_st[1:, cv2.CC_STAT_AREA].max(); _keep[0] = False
-                    fg = (_keep[_lb]*255).astype(np.uint8)
-                    if int(_keep.sum()) > 1: warn.append('%d separate pieces kept' % int(_keep.sum()))
+                if ov.get('remove_small_pieces'):
+                    _n, _lb, _st, _ = cv2.connectedComponentsWithStats((fg > 0).astype(np.uint8), 8)
+                    if _n > 2:
+                        sizes = _st[:, cv2.CC_STAT_AREA]
+                        keep = sizes >= .04 * sizes[1:].max()
+                        keep[0] = False
+                        fg = (keep[_lb] * 255).astype(np.uint8)
                 _fr = float((fg > 0).mean())
                 if not .015 < _fr < .75: problems.append('ai mask area %.3f' % _fr); fg = None
                 else:
                     _cs, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)       # B2: fill interior holes (white art read as backdrop)
                     _filled = np.zeros_like(fg); cv2.drawContours(_filled, _cs, -1, 255, cv2.FILLED)
                     hole_frac = float(((_filled > 0) & (fg == 0)).sum())/max(1, int((fg > 0).sum()))
-                    if not ov.get('see_through'): fg = _filled        # "see_through": true in overrides.json only for a real open window
-                    if hole_frac > .15: problems.append('holes %.1f%% of box: check the cutout' % (hole_frac*100))
-                    elif hole_frac > .002: warn.append('holes %.1f%% filled' % (hole_frac*100))
-                    fg, _hadd = convex_fix(fg)
-                    if _hadd > .004: warn.append('edge notches closed (+%.1f%% area)' % (_hadd*100))
+                    openings = (_filled > 0) & (fg == 0)
+                    if not ov.get('see_through'):
+                        fg = _filled
+                        if hole_frac > .15:
+                            problems.append('Large interior mask holes')
+                        elif hole_frac > .002:
+                            warn.append('Interior mask holes filled')
+                    if ov.get('straight_closed_edges'):
+                        fg, _hadd = convex_fix(fg, restore_tips=ov.get('square_tips', False))
+                        if ov.get('see_through'):
+                            fg[openings] = 0
+                    if boundary_support(raw, fg) < .10:
+                        problems.append('AI outline has little support in the source photo')
                     _y, _x = np.where(fg > 0); _sh, _sw = fg.shape
                     if _x.min() < _sw*.01 or _x.max() > _sw*.99 or _y.min() < _sh*.01 or _y.max() > _sh*.99: problems.append('touches frame edge')
                     method = 'isnet'; mask_src = 'ai'
@@ -539,16 +576,19 @@ def run(src, out, long=2400, pad=.125, wide=False):
         fg, method, (_ok2, _why2, tried) = mask_box(a, ov.get('rect'), ov.get('method'), ov.get('cut'))
         mask_src = 'rules'
         if not _ok2: problems.append(_why2)
+    if not np.any(fg > 127): raise ValueError('Empty foreground after cutout')
     if ov.get('trim'):   # keep only this part of the found box (fractions of its own bounding box: left, top, right, bottom); cuts a stray strip
         _y, _x = np.where(fg > 127); bl, br, bt, bb = _x.min(), _x.max(), _y.min(), _y.max(); tl, tt, tr, tb = ov['trim']; keep = np.zeros_like(fg)
         keep[int(bt+(bb-bt)*tt):int(bt+(bb-bt)*tb)+1, int(bl+(br-bl)*tl):int(bl+(br-bl)*tr)+1] = 1; fg = fg*keep
-    fg = smooth_fg(fg)
+    if mask_src == "rules": fg = smooth_fg(fg)
+    if not np.any(fg > 127): raise ValueError("Empty foreground after trimming")
     if ov.get('keystone'):                       # straight-on face shot from a slight angle: warp the 4-corner outline back to a rectangle
         _cs, _ = cv2.findContours((fg > 127).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE); _c = max(_cs, key=cv2.contourArea)
         _q = cv2.approxPolyDP(_c, .02*cv2.arcLength(_c, True), True)
         if len(_q) == 4:
             _q = _q.reshape(4, 2).astype(np.float32); _s = _q.sum(1); _d = np.diff(_q, axis=1).ravel()
             _o = np.array([_q[np.argmin(_s)], _q[np.argmin(_d)], _q[np.argmax(_s)], _q[np.argmax(_d)]], np.float32)       # tl, tr, br, bl
+            if len(np.unique(_o, axis=0)) != 4: raise ValueError('Ambiguous keystone corners')
             _w = (np.linalg.norm(_o[1]-_o[0])+np.linalg.norm(_o[2]-_o[3]))/2; _h = (np.linalg.norm(_o[3]-_o[0])+np.linalg.norm(_o[2]-_o[1]))/2
             _cx, _cy = _q[:, 0].mean(), _q[:, 1].mean(); _dst = np.array([[_cx-_w/2, _cy-_h/2], [_cx+_w/2, _cy-_h/2], [_cx+_w/2, _cy+_h/2], [_cx-_w/2, _cy+_h/2]], np.float32)
             _M = cv2.getPerspectiveTransform(_o, _dst); _hh, _ww = fg.shape
@@ -560,6 +600,7 @@ def run(src, out, long=2400, pad=.125, wide=False):
     if box_px < 1500: problems.append('box only %d px (enlarged too much)' % box_px)
     elif box_px < 1900: warn.append('box %d px (enlarged %.2fx)' % (box_px, 1920/box_px))
     _rin = raw[fg > 127]; blown_in = float((_rin.min(1) >= 250).mean()) if len(_rin) else 0.0      # lost highlights are measured on the INPUT (edge_define hides them later)
+    if (_rin >= 254).mean(axis=0).max() > .01: warn.append('Input channel clipping above 1%')
     if blown_in > .10: problems.append('%.1f%% of box blown out in the original photo' % (blown_in*100))
     elif blown_in > .01: warn.append('%.1f%% of box blown out in the original' % (blown_in*100))
     med, clean = backdrop_sample(raw, fg)                          # B8: backdrop color from the border outside the mask, one sample for wb and spill
@@ -567,7 +608,7 @@ def run(src, out, long=2400, pad=.125, wide=False):
         problems.append('backdrop not measurable (%.1f%% clean)' % (clean*100)); a = apply_repairs(wb(raw), ov)
         _t = np.median(a[:int(a.shape[0]*.12), int(a.shape[1]*.25):int(a.shape[1]*.75)].reshape(-1, 3), 0)
     else:
-        a = apply_repairs(wb(raw, med), ov); _t = med
+        a = apply_repairs(wb(raw, ov.get('neutral_rgb', med)), ov); _t = med
     spill = int(np.argmax(_t)) if _t.max()-_t.min() > 40 else None
     l, r, t, b = xs.min(), xs.max(), ys.min(), ys.max(); side = max(r-l, b-t); P = int(side*(pad+.12))
     cx, cy = (l+r)//2, (t+b)//2; half = side//2+P
@@ -576,22 +617,28 @@ def run(src, out, long=2400, pad=.125, wide=False):
     k = 3200/max(a.shape[:2])
     if k < 1: a = cv2.resize(a, None, fx=k, fy=k, interpolation=cv2.INTER_AREA); fg = cv2.resize(fg, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_LINEAR)
     fg0_area = int((fg > 127).sum())
-    fg, edge_moved = snap_edge(a, fg) if not os.environ.get('KY_NOSNAP') else (fg, 0.0)
+    fg, edge_moved = snap_edge(a, fg)
     snap_area = int((fg > 127).sum())
     if edge_moved < 0: warn.append('outline check rejected (area changed >15%): AI outline kept')
     elif edge_moved > .30: warn.append('AI mask was loose: outline moved in %.0f%% of the edge band' % (edge_moved*100))
-    if spill is not None:
-        if not os.environ.get('KY_NOERODE'): fg = cv2.erode(fg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))   # trim the thin backdrop-colored fringe at the outline
+    if spill is not None and ov.get('confirmed_neutral_stock') is True:
         _c0 = _chroma(a, fg > 127)
         _pr = art_protect(a, fg)
         a = despill(a, fg, spill, _pr); a = edge_decolor(a, fg); a = cast_fix(a, fg, _pr); a = haze_fix(a, fg, _pr)      # gloss_fix removed (B4): it turned real navy/blue art black
         _c1 = _chroma(a, fg > 127)
         if _c0 >= 8 and _c1 < .75*_c0: problems.append('color strength dropped %.0f%% (%.1f->%.1f)' % ((1-_c1/_c0)*100, _c0, _c1))
-    a, nd = clean_dust(a, fg); a = flatten(a, fg, tone=ov.get('tone')); a = pop(a); a = polish(a, fg); a = edge_define(a, fg)
+    nd = 0
+    if ov.get('dust_cleanup'):
+        a, nd = clean_dust(a, fg)
+    if ov.get('tone', 'capture') in ('auto', 'white'):
+        a = flatten(a, fg, tone=ov.get('tone'))
+        a = pop(a)
+        a = polish(a, fg)
+        a = edge_define(a, fg)
     _px = a[fg > 127]; clip_frac = float(((_px.max(1) <= 4) | (_px.min(1) >= 251)).mean()) if len(_px) else 0.0
     if clip_frac > .05: problems.append('%.1f%% of box pure black/white' % (clip_frac*100))
     ok = not problems; why = '; '.join(problems) or 'ok'
-    a = edge_extend(a, fg)
+    if spill is not None: a = edge_extend(a, fg, px=1)
     comp, bbox, soft, sh = composite(a, fg)
     # --- master (white background)
     can = _square_canvas(comp, bbox, pad, 255)
@@ -608,10 +655,10 @@ def run(src, out, long=2400, pad=.125, wide=False):
         cw, chh = 3200, 1800; bgc = (242, 243, 245)
         l2, t2, r2, b2 = bbox; sc = min(0.78*chh/max(1, (b2-t2)), 0.50*cw/max(1, (r2-l2)))
         pad_px = int(max(r2-l2, b2-t2)*.08); x0, y0, x1, y1 = max(0, l2-pad_px), max(0, t2-pad_px), min(rgba.shape[1], r2+pad_px), min(rgba.shape[0], b2+pad_px)
-        crop = Image.fromarray(np.dstack([np.clip(col[y0:y1, x0:x1], 0, 255), alpha[y0:y1, x0:x1]*255]).astype(np.uint8), 'RGBA')
+        crop = Image.fromarray(rgba[y0:y1, x0:x1])
         crop = crop.resize((max(1, int(crop.width*sc)), max(1, int(crop.height*sc))), Image.LANCZOS)
         bg = Image.new('RGBA', (cw, chh), bgc+(255,)); cxw = int(cw*(.45+.55/2)); cyw = int(chh*.52)
-        bg.alpha_composite(crop, (cxw-crop.width//2, cyw-crop.height//2)); _atomic(bg.convert('RGB'), out+'-wide.jpg', 'JPEG', quality=88, optimize=True, progressive=True)
+        bg.alpha_composite(crop, (cxw-crop.width//2, cyw-crop.height//2)); _atomic(bg.convert('RGB'), out+'-wide.jpg', 'JPEG', quality=88, optimize=True, progressive=True, subsampling=0)
     return {'file': name, 'size': im.size, 'cutout': method, 'qc_ok': bool(ok), 'qc': why, 'engine': ENGINE, 'warn': '; '.join(warn), 'mask_src': mask_src, 'hole_frac': round(hole_frac, 4), 'box_px': box_px, 'clip_frac': round(clip_frac, 4), 'edge_moved': round(edge_moved, 3), 'areas': [fg0_area, snap_area, int((fg > 127).sum())], 'blown_in': round(blown_in, 4), 'backdrop_clean': round(clean, 3), 'dust_px': nd, 'repairs': len(ov.get('repair', []))+len(ov.get('clone', [])), 'wide': bool(wide)}
 
 def maskcheck(d, outp):
@@ -619,17 +666,24 @@ def maskcheck(d, outp):
     sheet = Image.new('RGB', (cols*T, rows*(T+14)), 'white'); from PIL import ImageDraw; dr = ImageDraw.Draw(sheet); rep = []
     for i, f in enumerate(fs):
         a = wb(load(f)); h, w, _ = a.shape; sc = 600/max(h, w); s = cv2.resize(a, (int(w*sc), int(h*sc)), interpolation=cv2.INTER_AREA)
-        ov = overrides(os.path.basename(f)); m, method, (ok, why, tried) = mask_box(s, ov.get('rect'), ov.get('method'), ov.get('cut'))
+        with Image.open(mask_path(f)) as cached:
+            m = np.asarray(cached.convert('L').resize((s.shape[1], s.shape[0])))
+        method = 'cached AI'
+        ok, why = qc_mask((m > 127).astype(np.uint8))
         ov_img = s.copy(); cs, _ = cv2.findContours((m > 127).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(ov_img, cs, -1, (255, 0, 0) if not ok else (0, 200, 0), 3)
         im = Image.fromarray(ov_img); im.thumbnail((T, T)); x, y = (i % cols)*T, (i//cols)*(T+14); sheet.paste(im, (x, y+14))
         dr.text((x+2, y+1), f"{i} {os.path.basename(os.path.dirname(f))[:14]} {method}{'' if ok else ' !'+why[:18]}", fill='red' if not ok else 'black')
         rep.append((i, f, method, ok, why))
-    sheet.save(outp, quality=85)
+    _atomic(sheet, outp, 'JPEG', quality=85)
     for r in rep:
         if not r[3]: print('CHECK', r)
     print('masks ok:', sum(1 for r in rep if r[3]), '/', len(rep))
 
 if __name__ == '__main__':
     if sys.argv[1] == '--maskcheck': maskcheck(sys.argv[2], sys.argv[3])
-    else: print(run(sys.argv[1], sys.argv[2], wide='--wide' in sys.argv))
+    else:
+        with flow.writer():
+            result = run(sys.argv[1], sys.argv[2])
+        print(result)
+        sys.exit(0 if result['qc_ok'] else 3)

@@ -1,13 +1,13 @@
 {
- "PXL_20261123_151313636.jpg": {
+ "b-cellars/PXL_20261123_151313636.jpg": {
   "skip": true,
   "note": "b-cellars open two-piece: cutout keeps catching tent walls. Reshoot centered, or hand-cut."
  },
- "PXL_20261123_152032939.jpg": {
+ "concepts-kyrie-sneaker/PXL_20261123_152032939.jpg": {
   "skip": true,
   "note": "concepts-kyrie lid-top view: pale lid blends with backdrop, tent wall touches box. Reshoot or hand-cut."
  },
- "PXL_20261123_152120926.jpg": {
+ "warcraft-board-game/PXL_20261123_152120926.jpg": {
   "rect": [
    0.0,
    0.25,
@@ -16,7 +16,7 @@
   ],
   "note": "warcraft front: tent-wall sliver at right removed by limiting the search area. Verified by Claude."
  },
- "PXL_20261123_152122786.jpg": {
+ "warcraft-board-game/PXL_20261123_152122786.jpg": {
   "rect": [
    0.0,
    0.25,
@@ -25,28 +25,28 @@
   ],
   "note": "warcraft front (second take): same fix as the first. Unverified, check it."
  },
- "PXL_20261123_152008471.MP.jpg": {
+ "concepts-kyrie-sneaker/PXL_20261123_152008471.MP.jpg": {
   "note": "concepts front: keystone-corrected (shot slightly from above)",
   "keystone": true
  },
- "PXL_20261124_142658865.jpg": {
+ "rand-mcnally-eld-50/PXL_20261124_142658865.jpg": {
   "tone": "white"
  },
- "PXL_20261124_142702701.jpg": {
+ "rand-mcnally-eld-50/PXL_20261124_142702701.jpg": {
   "tone": "white"
  },
- "PXL_20261124_142710356.jpg": {
+ "rand-mcnally-eld-50/PXL_20261124_142710356.jpg": {
   "tone": "white"
  },
- "PXL_20261123_151513997.jpg": {
+ "brian-tooley/PXL_20261123_151513997.jpg": {
   "tone": "silver",
   "note": "Metallic silver wrap: keep captured tone (v16)"
  },
- "PXL_20261123_151540422.jpg": {
+ "brian-tooley/PXL_20261123_151540422.jpg": {
   "tone": "silver",
   "note": "Metallic silver wrap: keep captured tone (v16)"
  },
- "PXL_20261123_151552155.jpg": {
+ "brian-tooley/PXL_20261123_151552155.jpg": {
   "tone": "silver",
   "note": "Metallic silver wrap: keep captured tone (v16)"
  }

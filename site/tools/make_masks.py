@@ -1,23 +1,64 @@
-#!/usr/bin/env python3
-"""Pre-computes AI cutout masks (isnet-general-use via rembg) into _work/masks/<project>/<stem>.png for every photo listed in _work/meta.
-Run by Claude whenever new photos are filed; the workhorse does NOT need rembg because post_edit.py just reads these cached masks.
-Resumable. Usage: python make_masks.py [project ...]"""
-import os, sys, json, glob
+"""Generate source-bound masks on the machine with rembg installed."""
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+from PIL import Image, ImageOps, PngImagePlugin
+import pipeline as F
+
+MODEL = 'isnet-general-use'
 os.environ.setdefault('U2NET_HOME', os.path.expanduser('~/models'))
-import numpy as np
-from PIL import Image, ImageOps
-from rembg import new_session, remove
-ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')); META = os.path.join(ROOT, '_work', 'meta')
-s = new_session('isnet-general-use'); only = set(sys.argv[1:]); done = 0; import time; t0 = time.time()
-for mp in sorted(glob.glob(os.path.join(META, '*.json'))):
-    m = json.load(open(mp, encoding='utf-8')); slug = m['slug']
-    if only and slug not in only: continue
-    for ph in m['photos']:
-        src = os.path.join(ROOT, 'PHOTOS', '1-ORIGINALS', slug, ph['file']); out = os.path.join(ROOT, '_work', 'masks', slug, os.path.splitext(ph['file'])[0]+'.png')
-        if not os.path.exists(src): continue
-        if os.path.exists(out) and os.stat(out).st_mtime_ns >= os.stat(src).st_mtime_ns: continue      # remake when the photo was replaced after its mask
-        if time.time()-t0 > 150: print('time budget reached; run again'); sys.exit(2)
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        im = ImageOps.exif_transpose(Image.open(src)).convert('RGB'); im.thumbnail((1600, 1600))
-        remove(im, session=s, only_mask=True).save(out + '.tmp.png'); os.replace(out + '.tmp.png', out); done += 1
-print('masks made:', done)
+
+
+def usable(mask):
+    hist = mask.convert('L').histogram()
+    return .015 < sum(hist[128:]) / sum(hist) < .75
+
+
+def run(selected):
+    session = None
+    for project in F.projects(selected):
+        meta = F.manifest(project)
+        for photo in meta['photos']:
+            name = photo['file']
+            options = F.options(project, name, meta.get('render_defaults'))
+            if not photo.get('role') or any(options.get(k) for k in ('skip', 'method', 'rect')):
+                continue
+            source = F.ORIGINALS / project / name
+            fingerprint = F.digest(source)
+            target = F.checked(F.WORK / 'masks' / project / (Path(name).stem + '.png'))
+            if target.is_file():
+                try:
+                    with Image.open(target) as mask:
+                        if (mask.info.get('source_sha256') == fingerprint and mask.info.get('model') == MODEL
+                                and usable(mask)):
+                            continue
+                except (OSError, SyntaxError):
+                    pass
+            if session is None:
+                from rembg import new_session, remove
+                session = new_session(MODEL)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(source) as raw:
+                image = ImageOps.exif_transpose(raw).convert('RGB')
+            image.thumbnail((1600, 1600))
+            result = remove(image, session=session, only_mask=True).convert('L')
+            if not usable(result) or F.digest(source) != fingerprint:
+                raise ValueError(f'Implausible mask area or original changed during inference: {source}')
+            info = PngImagePlugin.PngInfo()
+            info.add_text('source_sha256', fingerprint)
+            info.add_text('model', MODEL)
+            with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as file:
+                tmp = Path(file.name)
+            try:
+                result.save(tmp, 'PNG', pnginfo=info)
+                os.replace(tmp, target)
+            finally:
+                tmp.unlink(missing_ok=True)
+            print('mask', project, name)
+
+
+if __name__ == '__main__':
+    with F.writer():
+        run(sys.argv[1:])

@@ -6,11 +6,13 @@ ROLES = {'hero', 'front', 'back', 'side', 'open', 'insert', 'finish', 'set'}
 STYLES = {'two-piece', 'neck', 'book-style', 'clamshell', 'slipcase-drawer', 'magnetic'}
 INDUSTRIES = {'chocolates', 'wine-spirits', 'cannabis', 'pharmaceutical', 'health-beauty', 'gaming-entertainment', 'religious-publishing', 'retail-gift', 'automotive', 'other'}
 RESERVED = {'con', 'prn', 'aux', 'nul'} | {f'com{i}' for i in range(1, 10)} | {f'lpt{i}' for i in range(1, 10)}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'site/tools'))
+import pipeline
 bad = []
 files = sorted(glob.glob('_work/meta/*.json'))
 if not files: bad.append('_work/meta: no project JSON files')
 for f in files:
-    m = json.loads(Path(f).read_text(encoding='utf-8'))
+    m = pipeline.manifest(Path(f).stem)
     for k in ('slug', 'title', 'box_style', 'industry', 'photos'):
         if k not in m: bad.append(f'{f}: missing {k}')
     slug = m.get('slug')
@@ -34,5 +36,11 @@ for f in files:
         if 'wide' in p and not isinstance(p['wide'], bool): bad.append(f'{f}: wide must be true/false on {name!r}')
 for f in glob.glob('site/tools/overrides*.json'):
     t = Path(f).read_text(encoding='utf-8').strip()
-    if t: json.loads(t)
+    for key, opts in json.loads(t).items():
+        project, name = key.split('/')
+        pipeline.slug(project)
+        if Path(name).name != name or not isinstance(opts, dict):
+            bad.append(f'Invalid override {key}')
+        if 'focus_rect' in opts and 'focus_min' not in opts:
+            bad.append(f'Missing focus_min for {key}')
 print('\n'.join(bad) or 'meta ok'); sys.exit(1 if bad else 0)

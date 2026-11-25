@@ -16,3 +16,8 @@ __pycache__/
 *.mp4
 *.zip
 *.tgz
+
+_work/previous/
+_work/pending*.json
+_work/pipeline.lock
+_work/spin/
