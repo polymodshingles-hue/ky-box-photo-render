@@ -1,0 +1,23 @@
+{
+ "slug": "large-print-compact-bible",
+ "title": "Large Print Compact Bible box",
+ "box_style": "slipcase-drawer",
+ "industry": "religious-publishing",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141257271.jpg",
+   "role": "front",
+   "wide": true,
+   "alt": "Large Print Compact Bible box, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_141301907.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Large Print Compact Bible box, straight-on view."
+  }
+ ]
+}

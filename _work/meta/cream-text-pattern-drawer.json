@@ -1,0 +1,23 @@
+{
+ "slug": "cream-text-pattern-drawer",
+ "title": "Cream slipcase with text-pattern print",
+ "box_style": "slipcase-drawer",
+ "industry": "other",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141036351.jpg",
+   "role": "front",
+   "wide": true,
+   "alt": "Cream slipcase with text-pattern print, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_141045514.MP.jpg",
+   "role": "open",
+   "wide": false,
+   "alt": "Cream slipcase with text-pattern print, opened to show the inside."
+  }
+ ]
+}

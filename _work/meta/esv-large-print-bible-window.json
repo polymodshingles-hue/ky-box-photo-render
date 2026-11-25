@@ -1,0 +1,23 @@
+{
+ "slug": "esv-large-print-bible-window",
+ "title": "ESV Large Print Bible, window box",
+ "box_style": "slipcase-drawer",
+ "industry": "religious-publishing",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141748925.MP.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "ESV Large Print Bible, window box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_141744585.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "ESV Large Print Bible, window box, straight-on view."
+  }
+ ]
+}

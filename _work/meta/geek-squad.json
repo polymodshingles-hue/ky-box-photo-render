@@ -1,0 +1,23 @@
+{
+ "slug": "geek-squad",
+ "title": "Geek Squad box",
+ "box_style": "two-piece",
+ "industry": "retail-gift",
+ "finishes": [],
+ "brand_ok": "yes",
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes when they arrive.",
+ "photos": [
+  {
+   "file": "PXL_20261123_152049334.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Geek Squad box, straight-on front view."
+  },
+  {
+   "file": "PXL_20261123_152055363.jpg",
+   "role": "front",
+   "wide": true,
+   "alt": "Geek Squad box, straight-on front view."
+  }
+ ]
+}
