@@ -1,0 +1,29 @@
+{
+ "slug": "b-cellars",
+ "title": "B Cellars wine gift box",
+ "box_style": "two-piece",
+ "industry": "wine-spirits",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes when they arrive. Reshot on blue 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261123_182237257.PORTRAIT.ORIGINAL.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "B Cellars wine gift box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261123_182233285.PORTRAIT.ORIGINAL.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "B Cellars wine gift box, straight-on view."
+  },
+  {
+   "file": "PXL_20261123_151255317.jpg",
+   "role": "open",
+   "wide": true,
+   "alt": "B Cellars wine gift box, opened to show the inside."
+  }
+ ]
+}

@@ -1,0 +1,47 @@
+{
+ "slug": "cream-sun-slipcase",
+ "title": "Cream slipcase with gold sun emblem",
+ "box_style": "slipcase-drawer",
+ "industry": "religious-publishing",
+ "finishes": [
+  "foil"
+ ],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes when they arrive. Possible duplicate of existing catalog entry cream-slipcase-with-gold-foil; check before publishing. Reshot on blue 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261123_182147274.PORTRAIT.ORIGINAL.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "Cream slipcase with gold sun emblem, three-quarter view."
+  },
+  {
+   "file": "PXL_20261123_182150569.PORTRAIT.ORIGINAL.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Cream slipcase with gold sun emblem, three-quarter view."
+  },
+  {
+   "file": "PXL_20261123_182143527.PORTRAIT.ORIGINAL.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Cream slipcase with gold sun emblem, straight-on view."
+  },
+  {
+   "file": "PXL_20261123_152223897.MP.jpg",
+   "role": null
+  },
+  {
+   "file": "PXL_20261123_152230050.jpg",
+   "role": null
+  },
+  {
+   "file": "PXL_20261123_152231006.jpg",
+   "role": null
+  },
+  {
+   "file": "PXL_20261123_182153721.PORTRAIT.ORIGINAL.jpg",
+   "role": null
+  }
+ ]
+}

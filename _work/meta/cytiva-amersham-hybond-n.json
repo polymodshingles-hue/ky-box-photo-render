@@ -1,0 +1,23 @@
+{
+ "slug": "cytiva-amersham-hybond-n",
+ "title": "Cytiva Amersham Hybond-N box",
+ "box_style": "two-piece",
+ "industry": "pharmaceutical",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141455104.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "Cytiva Amersham Hybond-N box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_141444688.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Cytiva Amersham Hybond-N box, straight-on view."
+  }
+ ]
+}

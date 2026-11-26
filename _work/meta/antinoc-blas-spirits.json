@@ -1,0 +1,23 @@
+{
+ "slug": "antinoc-blas-spirits",
+ "title": "Antinoc Blas spirits gift box",
+ "box_style": "two-piece",
+ "industry": "wine-spirits",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141546710.jpg",
+   "role": "front",
+   "wide": true,
+   "alt": "Antinoc Blas spirits gift box, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_141551471.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Antinoc Blas spirits gift box, three-quarter view."
+  }
+ ]
+}

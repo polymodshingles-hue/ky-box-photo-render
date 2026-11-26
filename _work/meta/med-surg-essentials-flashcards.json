@@ -1,0 +1,35 @@
+{
+ "slug": "med-surg-essentials-flashcards",
+ "title": "Med-Surg Essentials flashcard set, stacked boxes",
+ "box_style": "two-piece",
+ "industry": "other",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_142757849.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "Med-Surg Essentials flashcard set, stacked boxes, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_142805471.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Med-Surg Essentials flashcard set, stacked boxes, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_142808076.jpg",
+   "role": "finish",
+   "wide": false,
+   "alt": "Med-Surg Essentials flashcard set, stacked boxes, close-up of the finish."
+  },
+  {
+   "file": "PXL_20261124_142812325.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Med-Surg Essentials flashcard set, stacked boxes, straight-on view."
+  }
+ ]
+}

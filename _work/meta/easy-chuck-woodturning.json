@@ -1,0 +1,29 @@
+{
+ "slug": "easy-chuck-woodturning",
+ "title": "Easy Wood Tools Easy Chuck box",
+ "box_style": "two-piece",
+ "industry": "other",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141335462.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "Easy Wood Tools Easy Chuck box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_141341557.MP.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Easy Wood Tools Easy Chuck box, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_141345048.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Easy Wood Tools Easy Chuck box, straight-on view."
+  }
+ ]
+}

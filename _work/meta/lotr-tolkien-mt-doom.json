@@ -1,0 +1,23 @@
+{
+ "slug": "lotr-tolkien-mt-doom",
+ "title": "The Lord of the Rings boxed set",
+ "box_style": "slipcase-drawer",
+ "industry": "religious-publishing",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes when they arrive.",
+ "photos": [
+  {
+   "file": "PXL_20261123_151211722.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "The Lord of the Rings boxed set, three-quarter view with the lid on."
+  },
+  {
+   "file": "PXL_20261123_151215324.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "The Lord of the Rings boxed set, three-quarter view with the lid on."
+  }
+ ]
+}

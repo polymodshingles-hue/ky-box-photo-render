@@ -1,0 +1,35 @@
+{
+ "slug": "old-factory-aromatherapy",
+ "title": "Old Factory aromatherapy gift box",
+ "box_style": "two-piece",
+ "industry": "retail-gift",
+ "finishes": [],
+ "brand_ok": null,
+ "notes": "Classified by Claude from the photos; not confirmed yet. Correct from Shawn's audio notes. Shot 2026-11-24.",
+ "photos": [
+  {
+   "file": "PXL_20261124_141004529.jpg",
+   "role": "front",
+   "wide": false,
+   "alt": "Old Factory aromatherapy gift box, straight-on view."
+  },
+  {
+   "file": "PXL_20261124_141010826.jpg",
+   "role": "hero",
+   "wide": true,
+   "alt": "Old Factory aromatherapy gift box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_141007802.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Old Factory aromatherapy gift box, three-quarter view."
+  },
+  {
+   "file": "PXL_20261124_141014071.jpg",
+   "role": "hero",
+   "wide": false,
+   "alt": "Old Factory aromatherapy gift box, three-quarter view."
+  }
+ ]
+}
