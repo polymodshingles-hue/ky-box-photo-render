@@ -9,7 +9,7 @@ SRGB_PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes(
 import pipeline as flow
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = "v17"
+ENGINE = "v17b"
 
 def validate_output(path, source=None):
     dest = Path(path).resolve()
@@ -549,6 +549,16 @@ def run(src, out, long=2400, pad=.125, wide=True, options=None):
                         keep = sizes >= .04 * sizes[1:].max()
                         keep[0] = False
                         fg = (keep[_lb] * 255).astype(np.uint8)
+                if not ov.get('keep_edge_pieces'):      # tent walls/backdrop edges: drop small pieces that touch the frame border; interior pieces (lid, window) stay
+                    _n, _lb, _st, _ = cv2.connectedComponentsWithStats((fg > 0).astype(np.uint8), 8)
+                    if _n > 2:
+                        _h, _w = fg.shape
+                        _big = _st[1:, cv2.CC_STAT_AREA].max()
+                        _mx, _my = _w * .01, _h * .01      # same band the 'touches frame edge' check uses
+                        for _i in range(1, _n):
+                            _x, _y, _ww, _hh, _a = _st[_i]
+                            if _a < .04 * _big and (_x < _mx or _y < _my or _x + _ww > _w - _mx or _y + _hh > _h - _my):
+                                fg[_lb == _i] = 0
                 _fr = float((fg > 0).mean())
                 if not .015 < _fr < .75: problems.append('ai mask area %.3f' % _fr); fg = None
                 else:

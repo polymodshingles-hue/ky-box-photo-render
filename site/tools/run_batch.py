@@ -115,9 +115,14 @@ def run(selected):
     pending.update(str(Path('PHOTOS/1-ORIGINALS') / key) for key, row in report.items()
                    if row['status'] == 'PENDING' and (F.ORIGINALS / key).is_file())
     F.atomic_json(F.WORK / 'pending.json', sorted(pending))
+    if selected:     # a project run only fails on its own intake; other items stay listed in pending.json
+        mine = tuple(str(Path('PHOTOS/1-ORIGINALS') / project) for project in folders)
+        blocking = {item for item in pending if Path(item).as_posix().startswith(tuple(m.replace('\\', '/') + '/' for m in mine))}
+    else:
+        blocking = pending
     if pending:
-        print('PENDING intake: see _work/pending.json')
-    return 3 if bad or pending else 0
+        print('PENDING intake: see _work/pending.json' + ('' if blocking or not selected else ' (none for the selected projects)'))
+    return 3 if bad or blocking else 0
 
 
 if __name__ == '__main__':

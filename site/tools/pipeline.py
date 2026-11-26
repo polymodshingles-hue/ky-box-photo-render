@@ -71,7 +71,9 @@ def projects(selected):
 
 def digest(path):
     with Path(path).open('rb') as f:
-        return hashlib.file_digest(f, 'sha256').hexdigest()
+        h = hashlib.sha256()      # hashlib.file_digest needs Python 3.11+; the workhorse VM runs 3.10
+        for block in iter(lambda: f.read(1 << 20), b''): h.update(block)
+        return h.hexdigest()
 
 def atomic_json(path, value):
     path = checked(path)
